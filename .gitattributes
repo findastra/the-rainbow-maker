@@ -1,0 +1,21 @@
+# world-spawn-tool: Unity's text files stay LF; pictures, sound and models are binary
+*.unity text eol=lf
+*.prefab text eol=lf
+*.mat text eol=lf
+*.asset text eol=lf
+*.meta text eol=lf
+*.anim text eol=lf
+*.controller text eol=lf
+*.cs text eol=lf
+*.asmdef text eol=lf
+*.shader text eol=lf
+*.md text eol=lf
+*.png binary
+*.jpg binary
+*.tga binary
+*.psd binary
+*.exr binary
+*.hdr binary
+*.fbx binary
+*.wav binary
+*.ogg binary
