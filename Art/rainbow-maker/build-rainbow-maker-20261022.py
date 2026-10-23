@@ -54,8 +54,18 @@ M = {
     "screw":   mat("rm_screw", (0.02, 0.02, 0.02), metal=0.5, rough=0.35),
     "panel":   mat("rm_solar_cell", (0.12, 0.06, 0.05), metal=0.3, rough=0.15),
     "panelbk": mat("rm_panel_back", (0.2, 0.11, 0.08), rough=0.5),
-    "crystal": mat("rm_crystal", (0.92, 0.96, 1.0), metal=0.6, rough=0.02, alpha=0.55),
+    "crystal": mat("rm_crystal", (1.0, 1.0, 1.0), rough=0.0),
 }
+# Cut crystal: full transmission, lead-crystal IOR, and dispersion so it splits light into colours (Cycles shows
+# the dispersion; EEVEE refracts with raytracing). Unity uses its own crystal shader instead.
+_b = M["crystal"].node_tree.nodes["Principled BSDF"]
+_b.inputs["Transmission Weight"].default_value = 1.0
+_b.inputs["IOR"].default_value = 1.55
+if "Dispersion" in _b.inputs:
+    _b.inputs["Dispersion"].default_value = 0.6
+for attr, val in (("use_raytrace_refraction", True), ("use_screen_refraction", True)):
+    if hasattr(M["crystal"], attr):
+        setattr(M["crystal"], attr, val)
 
 def link(obj, parent=None):
     col.objects.link(obj)
@@ -167,6 +177,45 @@ def bevel_pinion(name, n, material, parent):
         bm.faces.new((lo[i], lo[j], hi[j], hi[i]))
     bmesh.ops.triangulate(bm, faces=bm.faces[:2])
     return mesh_obj(name, bm, material, parent)
+
+# ---------- crystals ----------
+# Astra's crystals (photos 2026-10-23): flat-topped octagons ~31 mm across and ~10 mm thick. Each face has an
+# eight-point star (16 facets meeting at a low point in the middle), then a ring of 24 bevel facets out to a thin
+# girdle, and a hole near the top for the hook.
+def crystal_hole_drop(r_px):
+    """px from the crystal's centre up to its hole."""
+    return r_px * math.cos(math.radians(22.5)) - 7
+
+def make_crystal(name, r_px, parent):
+    R = r_px * PX
+    girdle = 0.05 * R          # half thickness of the rim
+    ring_depth = 0.24 * R      # where the bevels meet the star
+    apex = 0.32 * R            # centre of each face (total thickness 0.64 R)
+    ring_r = 0.66
+    corner = [math.radians(22.5 + 45 * k) for k in range(8)]   # flat top edge between corners 1 and 2
+    mid = [math.radians(45 + 45 * k) for k in range(8)]
+    bm = bmesh.new()
+    def face(sign):
+        o = [bm.verts.new((R * math.cos(a), sign * girdle, R * math.sin(a))) for a in corner]
+        c = [bm.verts.new((ring_r * R * math.cos(a), sign * ring_depth, ring_r * R * math.sin(a))) for a in corner]
+        e = [bm.verts.new((ring_r * R * math.cos(math.radians(22.5)) * math.cos(a), sign * ring_depth,
+                           ring_r * R * math.cos(math.radians(22.5)) * math.sin(a))) for a in mid]
+        tip = bm.verts.new((0, sign * apex, 0))
+        for k in range(8):
+            j = (k + 1) % 8
+            for f in ((tip, c[k], e[k]), (tip, e[k], c[j]),                        # star
+                      (c[k], o[k], e[k]), (e[k], o[k], o[j]), (e[k], o[j], c[j])):  # bevels
+                bm.faces.new(f if sign < 0 else f[::-1])
+        return o
+    front, back = face(-1), face(1)
+    for k in range(8):
+        j = (k + 1) % 8
+        bm.faces.new((front[k], front[j], back[j], back[k]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    obj = mesh_obj(name, bm, M["crystal"], parent)
+    # the drilled hole: a short clear tube through the crystal near its top edge
+    cylinder(name + "_hole", 2.6, r_px * 0.66, M["clear"], obj, center=(0, 0, crystal_hole_drop(r_px) * PX), segs=12)
+    return obj
 
 # ---------- gear train ----------
 # From the photos: the coil kicks the brass magnet wheel; red -> orange, then orange splits:
@@ -291,27 +340,10 @@ for side, gear, ct, ccol, bt, bcol, cy, cr in OUTPUTS:
     hc.bevel_depth = 0.8 * PX
     hook = link(bpy.data.objects.new("hook_" + side, hc), cs)
     hook.data.materials.append(M["steel"])
-    # faceted octagon, flat top, eight-point star on both faces
-    R, T = cr * PX, cr * 0.3 * PX
-    bm = bmesh.new()
-    outer_f = [bm.verts.new((R * math.cos(a), -T * 0.18, R * math.sin(a))) for a in [math.radians(22.5 + 45 * k) for k in range(8)]]
-    outer_b = [bm.verts.new((v.co.x, T * 0.18, v.co.z)) for v in outer_f]
-    inner_f = [bm.verts.new((0.55 * R * math.cos(a), -T * 0.42, 0.55 * R * math.sin(a))) for a in [math.radians(45 * k) for k in range(8)]]
-    inner_b = [bm.verts.new((v.co.x, T * 0.42, v.co.z)) for v in inner_f]
-    cf, cb = bm.verts.new((0, -T * 0.5, 0)), bm.verts.new((0, T * 0.5, 0))
-    for k in range(8):
-        j = (k + 1) % 8
-        # outer_f[k] sits between inner_f[k] and inner_f[k+1]
-        bm.faces.new((cf, inner_f[j], inner_f[k]))
-        bm.faces.new((inner_f[k], inner_f[j], outer_f[k]))
-        bm.faces.new((outer_f[(k - 1) % 8], inner_f[k], outer_f[k]))
-        bm.faces.new((cb, inner_b[k], inner_b[j]))
-        bm.faces.new((inner_b[j], inner_b[k], outer_b[k]))
-        bm.faces.new((inner_b[k], outer_b[(k - 1) % 8], outer_b[k]))
-        bm.faces.new((outer_f[k], outer_f[j], outer_b[j], outer_b[k]))
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
-    cry = mesh_obj("crystal_" + side, bm, M["crystal"], cs)
-    cry.location = (0, 0, -(hang + cr * math.cos(math.radians(22.5))) * PX)
+    # The crystal hangs from the hook through a hole just under its flat top edge.
+    hole_z = -(rod + 30)                                   # px, the hook's lower bend
+    cry = make_crystal("crystal_" + side, cr, cs)
+    cry.location = (0, 0, (hole_z - crystal_hole_drop(cr)) * PX)
 
 # ---------- housing: peanut-shaped clear case ----------
 CIRCLES = [((0, 0), 100), ((-48, 112), 47), ((62, 62), 30)]   # main disc, lower-left lobe, right bump
@@ -430,6 +462,8 @@ if "closeup" in argv:
     cam.data.lens, cam.location, look = 150, (0.0, -0.40, -0.012), Vector((0, 0, -0.012))
 if "angle" in argv:   # like Astra's photo from below-left of the window
     cam.data.lens, cam.location, look = 70, (-0.2, -0.32, -0.12), Vector((0, 0, -0.03))
+if "crystals" in argv:   # the two crystals up close
+    cam.data.lens, cam.location, look = 100, (0.02, -0.30, -0.085), Vector((0, 0, -0.085))
 cam.rotation_euler = (look - Vector(cam.location)).to_track_quat("-Z", "Y").to_euler()
 scn.camera = cam
 sun = bpy.data.objects.new("sun", bpy.data.lights.new("sun", "SUN"))
@@ -446,6 +480,30 @@ scn.view_settings.exposure = -1.3
 world = bpy.data.worlds.new("bg"); scn.world = world
 world.use_nodes = True
 world.node_tree.nodes["Background"].inputs[0].default_value = (0.15, 0.15, 0.17, 1)  # graphite gray
+if "crystals" in argv:   # overcast sky over a dark city, like Astra's window photos; the glass bends both
+    nt = world.node_tree
+    tc, sep = nt.nodes.new("ShaderNodeTexCoord"), nt.nodes.new("ShaderNodeSeparateXYZ")
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    nt.links.new(tc.outputs["Generated"], sep.inputs[0])
+    mr = nt.nodes.new("ShaderNodeMapRange")
+    mr.inputs["From Min"].default_value, mr.inputs["From Max"].default_value = -1, 1
+    nt.links.new(sep.outputs["Z"], mr.inputs["Value"])
+    nt.links.new(mr.outputs["Result"], ramp.inputs["Fac"])
+    els = ramp.color_ramp.elements
+    els[0].position, els[0].color = 0.0, (0.03, 0.03, 0.03, 1)
+    els[1].position, els[1].color = 0.47, (0.12, 0.1, 0.09, 1)
+    for pos, c in ((0.5, (0.55, 0.57, 0.6, 1)), (1.0, (0.85, 0.87, 0.9, 1))):
+        e = els.new(pos); e.color = c
+    nt.links.new(ramp.outputs["Color"], nt.nodes["Background"].inputs[0])
+    nt.nodes["Background"].inputs[1].default_value = 1.4
+# neon strips behind the camera give the glass something bright to bend and split
+for k, (rgb, x) in enumerate((((1, 0.1, 0.65), -0.12), ((0.2, 0.9, 1), 0.0), ((1, 0.9, 0.3), 0.12))):
+    strip = bpy.data.objects.new("neon_strip_%d" % k, bpy.data.lights.new("neon_strip_%d" % k, "AREA"))
+    strip.data.shape, strip.data.size, strip.data.size_y = "RECTANGLE", 0.02, 0.4
+    strip.data.color, strip.data.energy = rgb, 8
+    strip.location = (x, -0.35, -0.05)
+    strip.rotation_euler = (math.radians(90), 0, 0)
+    col.objects.link(strip)
 
 # Curves (coil wire, hooks) become real meshes so Unity gets them.
 dg = bpy.context.evaluated_depsgraph_get()
@@ -478,6 +536,13 @@ print("WROTE", blend, fbx)
 if DO_RENDER or "still" in argv:
     eng = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
     scn.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in eng else "BLENDER_EEVEE"
+    if hasattr(scn.eevee, "use_raytracing"):
+        scn.eevee.use_raytracing = True
+    if "cycles" in argv:   # true glass with dispersion; slower
+        scn.render.engine = "CYCLES"
+        scn.cycles.samples = 192
+        scn.cycles.use_denoising = True
+        scn.cycles.max_bounces = scn.cycles.transmission_bounces = scn.cycles.glossy_bounces = 16
     scn.render.resolution_x, scn.render.resolution_y = 540, 960
     scn.render.film_transparent = False
 if "still" in argv:
