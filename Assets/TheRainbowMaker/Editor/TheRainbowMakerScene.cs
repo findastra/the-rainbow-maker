@@ -1,6 +1,6 @@
-// Builds The Rainbow Maker's scene: a graphite room with a big window, the solar Rainbow Maker (modelled in Blender,
-// Art/rainbow-maker/) stuck to the glass, its baked gear loop on an Animator, and six coloured spot lights riding the
-// crystal shaft so the rainbows sweep the room. Run from the menu, the agent queue (menu TheRainbowMaker/Build Scene),
+// Builds The Rainbow Maker's scene: a graphite room with a big window, Astra's double-crystal solar Rainbow Maker
+// (modelled in Blender, Art/rainbow-maker/) stuck to the glass, its baked gear loop on an Animator, and six coloured
+// spot lights riding the two crystal shafts so the rainbows sweep the room. Run from the menu, the agent queue (menu TheRainbowMaker/Build Scene),
 // or batchmode: -executeMethod TheRainbowMakerScene.BuildBatch (only while the project is closed).
 using System.IO;
 using System.Linq;
@@ -49,19 +49,24 @@ public static class TheRainbowMakerScene
         imp.importCameras = false;
         imp.importLights = false;
         foreach (var (name, color, metal, smooth, alpha, emit) in new[] {
-            ("rm_clear_plastic", new Color(0.85f, 0.92f, 1f), 0f, 0.95f, 0.12f, 0f),
+            ("rm_clear_plastic", new Color(0.85f, 0.92f, 1f), 0f, 0.95f, 0.08f, 0f),
             ("rm_crystal",       new Color(0.95f, 0.97f, 1f), 0.5f, 1f, 0.45f, 0.15f),
-            ("rm_gear_red",      new Color(0.95f, 0.05f, 0.12f), 0f, 0.6f, 1f, 0.25f),
-            ("rm_gear_orange",   new Color(1f, 0.38f, 0f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_red",      new Color(0.85f, 0.08f, 0.05f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_orange",   new Color(1f, 0.35f, 0f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_yellow",   new Color(1f, 0.85f, 0f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_lime",     new Color(0.35f, 0.95f, 0.1f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_green",    new Color(0.1f, 0.85f, 0.15f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_blue",     new Color(0.05f, 0.35f, 1f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_teal",     new Color(0f, 0.45f, 0.55f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_purple",   new Color(0.55f, 0.1f, 0.9f), 0f, 0.6f, 1f, 0.25f),
-            ("rm_copper_wire",   new Color(0.95f, 0.5f, 0.3f), 1f, 0.75f, 1f, 0f),
-            ("rm_magnet_wheel",  new Color(0.35f, 0.25f, 0.15f), 0.8f, 0.65f, 1f, 0f),
+            ("rm_gear_coral",    new Color(0.95f, 0.3f, 0.25f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_copper_wire",   new Color(0.75f, 0.38f, 0.2f), 1f, 0.7f, 1f, 0f),
+            ("rm_magnet_wheel",  new Color(0.7f, 0.55f, 0.3f), 0.9f, 0.7f, 1f, 0f),
             ("rm_steel",         new Color(0.8f, 0.8f, 0.82f), 1f, 0.8f, 1f, 0f),
-            ("rm_solar_cell",    new Color(0.05f, 0.08f, 0.2f), 0.3f, 0.85f, 1f, 0f),
-            ("rm_panel_back",    new Color(0.85f, 0.7f, 0.62f), 0f, 0.5f, 1f, 0f),
+            ("rm_black_metal",   new Color(0.03f, 0.03f, 0.035f), 0.6f, 0.6f, 1f, 0f),
+            ("rm_screw",         new Color(0.02f, 0.02f, 0.02f), 0.5f, 0.65f, 1f, 0f),
+            ("rm_solar_cell",    new Color(0.12f, 0.06f, 0.05f), 0.3f, 0.85f, 1f, 0f),
+            ("rm_panel_back",    new Color(0.2f, 0.11f, 0.08f), 0f, 0.5f, 1f, 0f),
         })
         {
             var m = MakeMat(MatDir + "/" + name.Replace('_', '-') + "-20261022.mat", color, metal, smooth, alpha, emit);
@@ -209,34 +214,41 @@ public static class TheRainbowMakerScene
         maker.name = "RainbowMaker";
         maker.transform.localScale = Vector3.one * MakerScale;
         // The FBX root arrives lying down (Blender's up is the model's local +Z, its front local -Y), so stand it up
-        // and turn its front into the room (-Z). The suction cup (0.108 m behind the root) touches the glass at z 5.04.
+        // and turn its front into the room (-Z). Then the suction cup goes against the glass (z 5.04) and the whole
+        // thing is centred in the window opening (0.8 to 3.4 m).
         maker.transform.rotation = Quaternion.Euler(-90, 180, 0);
-        maker.transform.position = new Vector3(0, 2.2f, 4.93f);
+        maker.transform.position = Vector3.zero;
+        var b = Bounds(maker);
+        maker.transform.position = new Vector3(-b.center.x, 2.1f - b.center.y, 5.04f - b.max.z);
         var anim = maker.GetComponent<Animator>();   // not ??: Unity's missing components are "fake null"
         if (anim == null) anim = maker.AddComponent<Animator>();
         anim.runtimeAnimatorController = AssetDatabase.LoadAssetAtPath<AnimatorController>(Controller);
         anim.cullingMode = AnimatorCullingMode.CullCompletely;
-        var rs = maker.GetComponentsInChildren<Renderer>();
-        var b = rs[0].bounds;
-        foreach (var r in rs) b.Encapsulate(r.bounds);
-        Debug.Log("TheRainbowMakerScene: maker bounds " + b.center.ToString("F3") + " size " + b.size.ToString("F3")
-                  + " renderers " + rs.Length + " root scale " + maker.transform.localScale
-                  + " crystal " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal").position.ToString("F3")
-                  + " panel " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "solar_panel").position.ToString("F3")
-                  + " front " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "housing_disc_front").position.ToString("F3"));
+        b = Bounds(maker);
+        Debug.Log("TheRainbowMakerScene: maker bounds " + b.min.ToString("F3") + " to " + b.max.ToString("F3"));
         return maker;
     }
 
-    // Six narrow spot lights, one per rainbow colour, ride the crystal shaft so the colours sweep the room as it turns.
+    static Bounds Bounds(GameObject go)
+    {
+        var rs = go.GetComponentsInChildren<Renderer>();
+        var b = rs[0].bounds;
+        foreach (var r in rs) b.Encapsulate(r.bounds);
+        return b;
+    }
+
+    // Six narrow spot lights, one per rainbow colour, three on each crystal shaft, so the colours sweep the room as
+    // the crystals turn (the left crystal turns twice as fast as the right one).
     static void AddRainbowLights(GameObject maker)
     {
-        var crystal = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal");
-        var shaft = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_shaft");
         Color[] rainbow = { new Color(1, 0.1f, 0.1f), new Color(1, 0.5f, 0), new Color(1, 0.95f, 0.1f),
                             new Color(0.1f, 1, 0.2f), new Color(0.1f, 0.4f, 1), new Color(0.6f, 0.15f, 1) };
         for (int i = 0; i < rainbow.Length; i++)
         {
-            var l = new GameObject("rainbow_" + i).AddComponent<Light>();
+            var side = i < 3 ? "left" : "right";
+            var crystal = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_" + side);
+            var shaft = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_shaft_" + side);
+            var l = new GameObject("rainbow_" + side + "_" + i).AddComponent<Light>();
             l.type = LightType.Spot;
             l.color = rainbow[i];
             l.spotAngle = 9;
@@ -270,19 +282,15 @@ public static class TheRainbowMakerScene
         var cam = camGo.AddComponent<Camera>();
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0.55f, 0.75f, 0.95f);
+        var c = Bounds(maker).center;
         var shots = new[] {
             ("room", new Vector3(0, 1.6f, -2.5f), new Vector3(0, 2f, 5f), 60f, 0f),
-            ("closeup-a", new Vector3(0.25f, 2.0f, 3.2f), new Vector3(0, 2.05f, 4.9f), 45f, 0f),
-            ("closeup-b", new Vector3(0.25f, 2.0f, 3.2f), new Vector3(0, 2.05f, 4.9f), 45f, 0.5f) };
+            ("closeup-a", c + new Vector3(0.25f, -0.1f, -1.9f), c, 50f, 0f),
+            ("closeup-b", c + new Vector3(0.25f, -0.1f, -1.9f), c, 50f, 0.5f),
+            ("angle", c + new Vector3(-1.1f, -0.7f, -1.5f), c, 50f, 1.2f) };
         foreach (var (n, pos, look, fov, t) in shots)
         {
             clip.SampleAnimation(maker, t);
-            var rs = maker.GetComponentsInChildren<Renderer>();
-            var b = rs[0].bounds;
-            foreach (var r in rs) b.Encapsulate(r.bounds);
-            Debug.Log("TheRainbowMakerScene: snapshot " + n + " bounds " + b.center.ToString("F3") + " size " + b.size.ToString("F3")
-                      + " first " + rs[0].name + " enabled " + rs[0].enabled + " shader " + rs[0].sharedMaterial?.shader?.name
-                      + " layer " + rs[0].gameObject.layer + " active " + rs[0].gameObject.activeInHierarchy);
             cam.transform.position = pos;
             cam.transform.LookAt(look);
             cam.fieldOfView = fov;

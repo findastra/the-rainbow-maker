@@ -7,6 +7,11 @@ ModelImporter:
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
+      name: rm_black_metal
+    second: {fileID: 2100000, guid: b859ba70e50ef0348811868cdd80a736, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
       name: rm_clear_plastic
     second: {fileID: 2100000, guid: bb5fc42a0d38446448795d1fad0c8ca0, type: 2}
   - first:
@@ -27,8 +32,18 @@ ModelImporter:
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
+      name: rm_gear_coral
+    second: {fileID: 2100000, guid: 8b962362c259ade4499424fb335755e6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
       name: rm_gear_green
     second: {fileID: 2100000, guid: 3268f83d5f3eca4419d4182fbe77eeef, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: rm_gear_lime
+    second: {fileID: 2100000, guid: 32c8db907e10e3842a193987e7124a3f, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
@@ -47,6 +62,11 @@ ModelImporter:
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
+      name: rm_gear_teal
+    second: {fileID: 2100000, guid: 440f04563df8a584aaf55ab3e7db4beb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
       name: rm_gear_yellow
     second: {fileID: 2100000, guid: 39bb8109cd18d30478bce4058fb6f75a, type: 2}
   - first:
@@ -59,6 +79,11 @@ ModelImporter:
       assembly: UnityEngine.CoreModule
       name: rm_panel_back
     second: {fileID: 2100000, guid: be2582595afd9154ba924517b2e824e6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: rm_screw
+    second: {fileID: 2100000, guid: 104a6d1ae2aa534458c8aa76b499b626, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
@@ -102,7 +127,7 @@ ModelImporter:
       takeName: Scene
       internalID: -623603649343465320
       firstFrame: 1
-      lastFrame: 901
+      lastFrame: 1801
       wrapMode: 0
       orientationOffsetY: 0
       level: 0
