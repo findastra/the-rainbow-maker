@@ -1,18 +1,19 @@
-# Builds a Kikkerland-style solar Rainbow Maker in Blender with a real, meshing gear train,
+# Builds Astra's double-crystal Kikkerland solar Rainbow Maker in Blender with a real, meshing gear train,
 # bakes a seamless loop and exports FBX for Unity.
-# Run: blender --background --python build-rainbow-maker-20261022.py -- <out_dir> [render]
+# Run: blender --background --python build-rainbow-maker-20261022.py -- <out_dir> [still N] [closeup|angle] [render]
+# Layout comes from Astra's own photos (2026-10-23), measured in "model px": 1 px = 0.264 mm, origin = centre of the
+# main disc, x to the right and y DOWN as seen from the room.
 import bpy, bmesh, math, sys, os
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = argv[0] if argv else os.path.dirname(os.path.abspath(__file__))
 DO_RENDER = "render" in argv
-STAMP = "20261022"
+STAMP = "20261022"   # file names stay the same so Unity keeps the FBX's GUID
 
-# Layout is measured in pixels off the product photo; 1 px = 0.264 mm (whole thing ~14 cm tall).
 PX = 0.000264
 FPS = 30
-LOOP_S = 30                     # seamless loop length
+LOOP_S = 60                     # seamless loop length
 FRAMES = FPS * LOOP_S
 
 # ---------- scene ----------
@@ -23,7 +24,7 @@ scn.frame_start, scn.frame_end = 1, FRAMES + 1
 col = scn.collection
 bpy.context.preferences.edit.keyframe_new_interpolation_type = "LINEAR"
 
-def mat(name, rgb, metal=0.0, rough=0.4, alpha=1.0, emit=None, transmission=0.0):
+def mat(name, rgb, metal=0.0, rough=0.4, alpha=1.0):
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     b = m.node_tree.nodes["Principled BSDF"]
@@ -31,31 +32,40 @@ def mat(name, rgb, metal=0.0, rough=0.4, alpha=1.0, emit=None, transmission=0.0)
     b.inputs["Metallic"].default_value = metal
     b.inputs["Roughness"].default_value = rough
     b.inputs["Alpha"].default_value = alpha
-    if transmission:
-        b.inputs["Transmission Weight"].default_value = transmission
-        b.inputs["IOR"].default_value = 1.5
-    if emit:
-        b.inputs["Emission Color"].default_value = (*emit, 1)
-        b.inputs["Emission Strength"].default_value = 1.5
     if alpha < 1 and hasattr(m, "surface_render_method"):
         m.surface_render_method = "BLENDED"
     return m
 
 M = {
-    "clear":   mat("rm_clear_plastic", (0.85, 0.92, 1.0), rough=0.0, alpha=0.07),
-    "red":     mat("rm_gear_red", (0.95, 0.05, 0.12), rough=0.3),
-    "orange":  mat("rm_gear_orange", (1.0, 0.38, 0.0), rough=0.3),
+    "clear":   mat("rm_clear_plastic", (0.85, 0.92, 1.0), rough=0.0, alpha=0.04),
+    "red":     mat("rm_gear_red", (0.85, 0.08, 0.05), rough=0.3),
+    "orange":  mat("rm_gear_orange", (1.0, 0.35, 0.0), rough=0.3),
     "yellow":  mat("rm_gear_yellow", (1.0, 0.85, 0.0), rough=0.3),
+    "lime":    mat("rm_gear_lime", (0.35, 0.95, 0.1), rough=0.3),
     "green":   mat("rm_gear_green", (0.1, 0.85, 0.15), rough=0.3),
     "blue":    mat("rm_gear_blue", (0.05, 0.35, 1.0), rough=0.3),
+    "teal":    mat("rm_gear_teal", (0.0, 0.45, 0.55), rough=0.3),
     "purple":  mat("rm_gear_purple", (0.55, 0.1, 0.9), rough=0.3),
-    "copper":  mat("rm_copper_wire", (0.95, 0.5, 0.3), metal=1.0, rough=0.25),
-    "bronze":  mat("rm_magnet_wheel", (0.35, 0.25, 0.15), metal=0.8, rough=0.35),
+    "coral":   mat("rm_gear_coral", (0.95, 0.3, 0.25), rough=0.3),
+    "copper":  mat("rm_copper_wire", (0.75, 0.38, 0.2), metal=1.0, rough=0.3),
+    "brass":   mat("rm_magnet_wheel", (0.7, 0.55, 0.3), metal=0.9, rough=0.3),
     "steel":   mat("rm_steel", (0.8, 0.8, 0.82), metal=1.0, rough=0.2),
-    "panel":   mat("rm_solar_cell", (0.05, 0.08, 0.2), metal=0.3, rough=0.15),
-    "panelbk": mat("rm_panel_back", (0.85, 0.7, 0.62), rough=0.5),
-    "crystal": mat("rm_crystal", (0.92, 0.96, 1.0), metal=0.6, rough=0.02, alpha=0.55),
+    "black":   mat("rm_black_metal", (0.03, 0.03, 0.035), metal=0.6, rough=0.4),
+    "screw":   mat("rm_screw", (0.02, 0.02, 0.02), metal=0.5, rough=0.35),
+    "panel":   mat("rm_solar_cell", (0.12, 0.06, 0.05), metal=0.3, rough=0.15),
+    "panelbk": mat("rm_panel_back", (0.2, 0.11, 0.08), rough=0.5),
+    "crystal": mat("rm_crystal", (1.0, 1.0, 1.0), rough=0.0),
 }
+# Cut crystal: full transmission, lead-crystal IOR, and dispersion so it splits light into colours (Cycles shows
+# the dispersion; EEVEE refracts with raytracing). Unity uses its own crystal shader instead.
+_b = M["crystal"].node_tree.nodes["Principled BSDF"]
+_b.inputs["Transmission Weight"].default_value = 1.0
+_b.inputs["IOR"].default_value = 1.55
+if "Dispersion" in _b.inputs:
+    _b.inputs["Dispersion"].default_value = 0.6
+for attr, val in (("use_raytrace_refraction", True), ("use_screen_refraction", True)):
+    if hasattr(M["crystal"], attr):
+        setattr(M["crystal"], attr, val)
 
 def link(obj, parent=None):
     col.objects.link(obj)
@@ -77,238 +87,338 @@ def empty(name, loc=(0, 0, 0), parent=None):
     e.location = loc
     return link(e, parent)
 
-# Photo pixel (x right, y down) -> Blender (x right, z up); y is depth (toward viewer = -y).
-DISC_C = (380, 210)
-def P(x, y):
-    return Vector(((x - DISC_C[0]) * PX, 0, -(y - DISC_C[1]) * PX))
+def P(x, y, depth=0.0):
+    """model px (x right, y down, depth toward the glass) -> Blender (x right, z up, -y toward the room)."""
+    return Vector((x * PX, depth * PX, -y * PX))
+
+def cylinder(name, r_px, length_px, material, parent=None, axis="Y", segs=24, center=(0, 0, 0), r2_px=None):
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=segs, radius1=r_px * PX,
+                          radius2=(r2_px if r2_px is not None else r_px) * PX, depth=length_px * PX)
+    rot = {"Y": ("X", -math.pi / 2), "X": ("Y", math.pi / 2), "Z": None}[axis]
+    if rot:
+        bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(rot[1], 4, rot[0]))
+    bmesh.ops.translate(bm, verts=bm.verts, vec=Vector(center))
+    return mesh_obj(name, bm, material, parent, smooth=True)
+
+def box(name, size_px, material, parent=None, loc=(0, 0, 0)):
+    bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1)
+    bmesh.ops.scale(bm, vec=(size_px[0] * PX, size_px[1] * PX, size_px[2] * PX), verts=bm.verts)
+    o = mesh_obj(name, bm, material, parent); o.location = loc
+    return o
+
+def prism(name, outline_xz, y0_px, y1_px, material, parent=None):
+    """Extrude a 2D outline (Blender x,z in metres) between depths y0..y1 (px); triangulated for Unity."""
+    bm = bmesh.new()
+    a = [bm.verts.new((x, y0_px * PX, z)) for x, z in outline_xz]
+    b = [bm.verts.new((x, y1_px * PX, z)) for x, z in outline_xz]
+    bm.faces.new(a[::-1]); bm.faces.new(b)
+    n = len(outline_xz)
+    for i in range(n):
+        j = (i + 1) % n
+        bm.faces.new((a[i], a[j], b[j], b[i]))
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    return mesh_obj(name, bm, material, parent)
 
 # ---------- gear geometry ----------
 MOD = 1.5  # module in px: pitch radius = MOD * teeth / 2
 
 def gear_profile(n, mod):
-    """Spur gear outline: n teeth, trapezoid teeth, pitch radius mod*n/2. Tooth 0 centred on +X."""
+    """Spur gear outline: n trapezoid teeth, pitch radius mod*n/2. Tooth 0 centred on +X."""
     rp = mod * n / 2
     ra, rd = rp + mod, rp - 1.25 * mod
-    pts = []
-    step = 2 * math.pi / n
+    pts, step = [], 2 * math.pi / n
     for i in range(n):
         a = i * step
         for da, r in ((-0.30, rd), (-0.17, ra), (0.17, ra), (0.30, rd)):
-            # da is a fraction of the tooth pitch angle
             pts.append((r * math.cos(a + da * step), r * math.sin(a + da * step)))
     return pts
 
-def spur(name, n, thick_px, material, parent, y_off_px=0.0, hub_r_px=None):
+def spur(name, n, thick_px, material, parent, y_off_px=0.0):
     """Gear in the XZ plane (axle along Y), centred on the parent empty."""
     bm = bmesh.new()
     pts = gear_profile(n, MOD)
-    t = thick_px * PX
-    y0 = y_off_px * PX
+    t, y0 = thick_px * PX, y_off_px * PX
     top = [bm.verts.new((x * PX, y0 - t / 2, z * PX)) for x, z in pts]
     bot = [bm.verts.new((x * PX, y0 + t / 2, z * PX)) for x, z in pts]
     bm.faces.new(top[::-1]); bm.faces.new(bot)
     for i in range(len(pts)):
         j = (i + 1) % len(pts)
         bm.faces.new((top[i], top[j], bot[j], bot[i]))
+    bmesh.ops.triangulate(bm, faces=bm.faces[:2])
     return mesh_obj(name, bm, material, parent)
 
-def cylinder(name, r_px, length_px, material, parent=None, axis="Y", segs=24, center=(0, 0, 0)):
+def crown(name, n, y_px, material, parent):
+    """Face gear on the parent's axle at depth y, teeth pointing toward the room (-y)."""
+    r = MOD * n / 2
     bm = bmesh.new()
-    bmesh.ops.create_cone(bm, cap_ends=True, segments=segs, radius1=r_px * PX,
-                          radius2=r_px * PX, depth=length_px * PX)
-    rot = {"Y": ("X", math.pi / 2), "X": ("Y", math.pi / 2), "Z": None}[axis]
-    if rot:
-        from mathutils import Matrix
-        bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(rot[1], 4, rot[0]))
-    bmesh.ops.translate(bm, verts=bm.verts, vec=Vector(center))
-    return mesh_obj(name, bm, material, parent, smooth=True)
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=40, radius1=(r + 1) * PX, radius2=(r + 1) * PX, depth=2 * PX)
+    bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
+    bmesh.ops.translate(bm, verts=bm.verts, vec=Vector((0, y_px * PX, 0)))
+    for k in range(n):
+        a = 2 * math.pi * k / n
+        c = Vector((math.cos(a) * (r - 1.5) * PX, (y_px - 2.2) * PX, math.sin(a) * (r - 1.5) * PX))
+        t = bmesh.ops.create_cube(bm, size=1)
+        sc = Matrix.Diagonal((3.2 * PX, 2.4 * PX, 1.6 * PX, 1))
+        bmesh.ops.transform(bm, verts=t["verts"], matrix=Matrix.Rotation(-a, 4, "Y") @ sc)
+        bmesh.ops.translate(bm, verts=t["verts"], vec=c)
+    return mesh_obj(name, bm, material, parent)
 
-# ---------- gear train (all speeds follow from tooth counts) ----------
-# Each shaft: big gear (driven) + pinion (drives the next big gear). Every stage is 3:1.
-# magnet wheel pinion 8 -> red 24 ; red pinion 8 -> ... wait, pinion = next big / 3.
-TRAIN = [  # name, big teeth, pinion teeth, colour, photo position hint
-    ("magnet_wheel", None, 8,  "bronze", (352, 185)),
-    ("gear_red",     24,   10, "red",    (325, 170)),
-    ("gear_orange",  30,   12, "orange", (316, 200)),
-    ("gear_yellow",  36,   14, "yellow", (330, 235)),
-    ("gear_green",   42,   None, "green", (375, 245)),
+def bevel_pinion(name, n, material, parent):
+    """Small cone gear on a vertical (Z) shaft, wide end up, like the real bevel pinions."""
+    bm = bmesh.new()
+    pts = gear_profile(n, MOD)
+    lo = [bm.verts.new((x * PX * 0.7, z * PX * 0.7, -4 * PX)) for x, z in pts]
+    hi = [bm.verts.new((x * PX, z * PX, 0)) for x, z in pts]
+    bm.faces.new(lo[::-1]); bm.faces.new(hi)
+    for i in range(len(pts)):
+        j = (i + 1) % len(pts)
+        bm.faces.new((lo[i], lo[j], hi[j], hi[i]))
+    bmesh.ops.triangulate(bm, faces=bm.faces[:2])
+    return mesh_obj(name, bm, material, parent)
+
+# ---------- crystals ----------
+# Astra's crystals (photos 2026-10-23): flat-topped octagons ~31 mm across and ~10 mm thick. Each face has an
+# eight-point star (16 facets meeting at a low point in the middle), then a ring of 24 bevel facets out to a thin
+# girdle, and a hole near the top for the hook.
+def crystal_hole_drop(r_px):
+    """px from the crystal's centre up to its hole."""
+    return r_px * math.cos(math.radians(22.5)) - 7
+
+def make_crystal(name, r_px, parent):
+    R = r_px * PX
+    girdle = 0.05 * R          # half thickness of the rim
+    ring_depth = 0.24 * R      # where the bevels meet the star
+    apex = 0.32 * R            # centre of each face (total thickness 0.64 R)
+    ring_r = 0.66
+    corner = [math.radians(22.5 + 45 * k) for k in range(8)]   # flat top edge between corners 1 and 2
+    mid = [math.radians(45 + 45 * k) for k in range(8)]
+    bm = bmesh.new()
+    def face(sign):
+        o = [bm.verts.new((R * math.cos(a), sign * girdle, R * math.sin(a))) for a in corner]
+        c = [bm.verts.new((ring_r * R * math.cos(a), sign * ring_depth, ring_r * R * math.sin(a))) for a in corner]
+        e = [bm.verts.new((ring_r * R * math.cos(math.radians(22.5)) * math.cos(a), sign * ring_depth,
+                           ring_r * R * math.cos(math.radians(22.5)) * math.sin(a))) for a in mid]
+        tip = bm.verts.new((0, sign * apex, 0))
+        for k in range(8):
+            j = (k + 1) % 8
+            for f in ((tip, c[k], e[k]), (tip, e[k], c[j]),                        # star
+                      (c[k], o[k], e[k]), (e[k], o[k], o[j]), (e[k], o[j], c[j])):  # bevels
+                bm.faces.new(f if sign < 0 else f[::-1])
+        return o
+    front, back = face(-1), face(1)
+    for k in range(8):
+        j = (k + 1) % 8
+        bm.faces.new((front[k], front[j], back[j], back[k]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    obj = mesh_obj(name, bm, M["crystal"], parent)
+    # the drilled hole: a short clear tube through the crystal near its top edge
+    cylinder(name + "_hole", 2.6, r_px * 0.66, M["clear"], obj, center=(0, 0, crystal_hole_drop(r_px) * PX), segs=12)
+    return obj
+
+# ---------- gear train ----------
+# From the photos: the coil kicks the brass magnet wheel; red -> orange, then orange splits:
+#   orange -> yellow -> big green (right output)      orange -> lime -> blue (left output, in the lower-left lobe)
+# Each output has a crown gear on its axle (teal on green, purple on blue) turning a bevel pinion (purple on the
+# right, coral on the left) on a vertical shaft that carries a crystal. Tooth counts are chosen so every shaft makes
+# whole turns per loop; the real counts are unknown.
+GEARS = [  # name, driver, big teeth, pinion teeth, colour, photo position (model px)
+    ("magnet_wheel", None,          None, 8,    "brass",  (-35, 1)),
+    ("gear_red",     "magnet_wheel", 24,  10,   "red",    (-58, 27)),
+    ("gear_orange",  "gear_red",     30,  10,   "orange", (-32, 43)),
+    ("gear_yellow",  "gear_orange",  30,  10,   "yellow", (1, 32)),
+    ("gear_green",   "gear_yellow",  40,  None, "green",  (40, 53)),
+    ("gear_lime",    "gear_orange",  20,  10,   "lime",   (-30, 72)),   # straight under orange, clear of yellow
+    ("gear_blue",    "gear_lime",    30,  None, "blue",   (-48, 110)),
 ]
-CROWN_T, BEVEL_T = 40, 8  # crown on the green shaft drives the purple pinion on the crystal shaft
-LAYER = 6.0                # px between gear layers along the axle
+G = {g[0]: dict(zip(("name", "driver", "big", "pin", "colour", "hint"), g)) for g in GEARS}
+OUTPUTS = [  # side, gear, crown teeth/colour, bevel teeth/colour, crystal centre y (px), crystal radius (px)
+    ("right", "gear_green", 20, "teal",   8, "purple", 280, 52),
+    ("left",  "gear_blue",  20, "purple", 8, "coral",  377, 58),
+]
+LAYER = 6.0          # px between gear layers along the axle; layer 0 is deepest (toward the glass)
+def layer_y(layer):
+    return 10 - layer * LAYER
+
+# layers: a gear's big wheel sits on its driver's pinion layer, its pinion one layer nearer the room
+for g in GEARS:
+    d = G[g[0]]
+    d["layer_big"] = G[d["driver"]]["layer_pin"] if d["driver"] else None
+    d["layer_pin"] = (d["layer_big"] + 1) if d["layer_big"] is not None else 0
+
+# positions: each driven gear sits exactly pitch-radius apart from its driver, in the photo's direction
+for g in GEARS:
+    d = G[g[0]]
+    if not d["driver"]:
+        d["pos"] = Vector(d["hint"])
+        continue
+    dr = G[d["driver"]]
+    dist = MOD * dr["pin"] / 2 + MOD * d["big"] / 2
+    d["pos"] = dr["pos"] + (Vector(d["hint"]) - Vector(dr["hint"])).normalized() * dist
+
+def outer_r(d, which):
+    n = d["big"] if which == "big" else d["pin"]
+    return MOD * n / 2 + MOD
+
+# check: wheels on one layer that don't mesh must not overlap
+meshes = {(G[n]["driver"], n) for n in G if G[n]["driver"]}
+wheels = [(d["name"], w, d["layer_big"] if w == "big" else d["layer_pin"]) for d in G.values()
+          for w in ("big", "pin") if (d["big"] if w == "big" else d["pin"])]
+for i, (a, wa, la) in enumerate(wheels):
+    for b, wb, lb in wheels[i + 1:]:
+        if la != lb or a == b or (a, b) in meshes or (b, a) in meshes:
+            continue
+        gap = (G[a]["pos"] - G[b]["pos"]).length - outer_r(G[a], wa) - outer_r(G[b], wb)
+        if gap < 0.5:
+            print("GEAR CLASH: %s %s and %s %s on layer %d (gap %.1f px)" % (a, wa, b, wb, la, gap))
+
+# turns per loop, from the magnet wheel down (meshing gears counter-rotate)
+G["magnet_wheel"]["turns"] = 216.0
+for g in GEARS[1:]:
+    d, dr = G[g[0]], G[g[1]]
+    d["turns"] = -dr["turns"] * dr["pin"] / d["big"]
+for side, gear, ct, _, bt, _, _, _ in OUTPUTS:
+    G[gear]["crystal_turns"] = abs(G[gear]["turns"]) * ct / bt
+
+# tooth phase so teeth interlock: the driven wheel gets a half-tooth offset at the contact line
+G["magnet_wheel"]["phase"] = 0.0
+for g in GEARS[1:]:
+    d, dr = G[g[0]], G[g[1]]
+    v = d["pos"] - dr["pos"]
+    theta = math.atan2(-v.y, v.x)               # photo y is down; Blender z is up
+    na, nb = dr["pin"], d["big"]
+    da = dr["phase"] - theta
+    db = -(na / nb) * da + math.pi / nb
+    d["phase"] = theta + math.pi + db
 
 root = empty("rainbow_maker")
 housing = empty("housing", parent=root)
 
-# Place gears back from green so each pair sits exactly at pitch-radius distance, in the photo's direction.
-pos = {}
-pos["gear_green"] = P(*TRAIN[4][4])
-for i in range(3, -1, -1):
-    name, big, pin, _, hint = TRAIN[i]
-    nxt_name, nxt_big = TRAIN[i + 1][0], TRAIN[i + 1][1]
-    dist = (MOD * pin / 2 + MOD * nxt_big / 2) * PX
-    d = (P(*hint) - P(*TRAIN[i + 1][4])).normalized()
-    pos[name] = pos[nxt_name] + d * dist
-
-# Turns per loop for each shaft: crystal shaft = 5 (one turn every 6 s).
-crystal_turns = 5
-green_turns = crystal_turns * BEVEL_T / CROWN_T          # 1 turn
-turns = {"gear_green": green_turns}
-for i in range(3, -1, -1):
-    name, _, pin, _, _ = TRAIN[i]
-    nxt_name, nxt_big = TRAIN[i + 1][0], TRAIN[i + 1][1]
-    turns[name] = -turns[nxt_name] * nxt_big / pin      # meshing gears counter-rotate
-
-# Tooth phase so teeth interlock instead of overlapping: driven gear gets half a tooth offset.
-phase = {"magnet_wheel": 0.0}
-for i in range(4):
-    a, b = TRAIN[i], TRAIN[i + 1]
-    va = pos[b[0]] - pos[a[0]]
-    theta = math.atan2(va.z, va.x)            # direction from driver to driven (in XZ)
-    na, nb = a[2], b[1]
-    da = phase[a[0]] - theta                  # driver tooth offset from contact line
-    db = -(na / nb) * da + math.pi / nb       # driven gap offset
-    phase[b[0]] = theta + math.pi + db
-
 shafts = {}
-for i, (name, big, pin, colr, _) in enumerate(TRAIN):
-    s = empty(name, loc=pos[name], parent=housing)
+for g in GEARS:
+    d = G[g[0]]
+    s = empty(d["name"], loc=P(*d["pos"]), parent=housing)
     s.rotation_mode = "XYZ"
-    shafts[name] = s
-    # Layers step toward the viewer (-y): big gear meshes on the previous shaft's pinion layer.
-    layer_big = -(i - 1) * LAYER + 10
-    layer_pin = -i * LAYER + 10
-    if big:
-        spur(name + "_teeth", big, 3.0, M[colr], s, y_off_px=layer_big)
-    else:  # magnet wheel: dark disc with two magnets that the coil kicks; drives via its pinion
-        cylinder("magnet_wheel_disc", 13, 4, M["bronze"], s, center=(0, 16 * PX, 0))
+    shafts[d["name"]] = s
+    if d["big"]:
+        spur(d["name"] + "_teeth", d["big"], 3.0, M[d["colour"]], s, y_off_px=layer_y(d["layer_big"]))
+    else:   # brass magnet wheel: a disc with two magnets the coil kicks, behind its pinion
+        cylinder("magnet_wheel_disc", 17, 3, M["brass"], s, center=(0, 16 * PX, 0), segs=32)
         for k in (0, 1):
-            cylinder(f"magnet_{k}", 3.2, 4.5, M["steel"], s, segs=12,
-                     center=(math.cos(k * math.pi) * 9 * PX, 16 * PX, math.sin(k * math.pi) * 9 * PX))
-    if pin:
-        spur(name + "_pinion", pin, 3.0, M[colr], s, y_off_px=layer_pin)
-    cylinder(name + "_axle", 1.2, 34, M["steel"], s, segs=10, center=(0, 8 * PX, 0))
+            cylinder("magnet_%d" % k, 3.5, 4, M["black"], s, segs=12,
+                     center=(math.cos(k * math.pi) * 11 * PX, 16 * PX, math.sin(k * math.pi) * 11 * PX))
+    if d["pin"]:
+        spur(d["name"] + "_pinion", d["pin"], 3.0, M[d["colour"]], s, y_off_px=layer_y(d["layer_pin"]))
+    cylinder(d["name"] + "_axle", 1.2, 44, M["steel"], s, segs=10, center=(0, 8 * PX, 0))
 
-# Crown gear on the green shaft (teeth on its back face) + purple pinion on the vertical crystal shaft.
-g = shafts["gear_green"]
-crown_r = MOD * CROWN_T / 2
-crown_y = 6   # behind the green gear, teeth facing the back plate
-bm = bmesh.new()
-bmesh.ops.create_cone(bm, cap_ends=True, segments=48, radius1=crown_r * PX, radius2=crown_r * PX, depth=2 * PX)
-from mathutils import Matrix
-bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
-bmesh.ops.translate(bm, verts=bm.verts, vec=Vector((0, crown_y * PX, 0)))
-for k in range(CROWN_T):
-    a = 2 * math.pi * k / CROWN_T
-    c = Vector((math.cos(a) * (crown_r - 1.5) * PX, (crown_y + 2.2) * PX, math.sin(a) * (crown_r - 1.5) * PX))
-    t = bmesh.ops.create_cube(bm, size=1)
-    sc = Matrix.Diagonal((3.2 * PX, 2.4 * PX, 1.6 * PX, 1))
-    bmesh.ops.transform(bm, verts=t["verts"], matrix=Matrix.Rotation(-a, 4, "Y") @ sc)
-    bmesh.ops.translate(bm, verts=t["verts"], vec=c)
-mesh_obj("crown_gear_blue", bm, M["blue"], g)
+# ---------- outputs: crown -> bevel pinion -> shaft -> sleeve -> hook -> crystal ----------
+CROWN_Y = -20                       # crown sits in the U-cap in front of the case; teeth face the room
+crystal_shafts = {}
+for side, gear, ct, ccol, bt, bcol, cy, cr in OUTPUTS:
+    g = G[gear]
+    s = shafts[gear]
+    cylinder(gear + "_crown_axle", 1.4, 14, M["steel"], s, segs=10, center=(0, -15 * PX, 0))
+    crown("crown_" + side, ct, CROWN_Y, M[ccol], s)
+    crown_r = MOD * ct / 2
+    bevel_r = MOD * bt / 2
+    top = g["pos"] + Vector((0, crown_r - 1.5))          # pinion top touches the crown's lowest teeth
+    depth = CROWN_Y - 2.2 - bevel_r
+    cs = empty("crystal_shaft_" + side, loc=P(top.x, top.y, depth), parent=housing)
+    cs.rotation_mode = "XYZ"
+    crystal_shafts[side] = (cs, g["crystal_turns"])
+    bevel_pinion("bevel_" + side, bt, M[bcol], cs)
+    hang = cy - cr - top.y                                # px from pinion to crystal top
+    rod = hang - 34
+    cylinder("crystal_rod_" + side, 2.2, rod, M["steel"], cs, axis="Z", segs=12, center=(0, 0, -rod / 2 * PX))
+    # S-hook: an elongated wire loop between the rod end and the crystal
+    hc = bpy.data.curves.new("hook_" + side, "CURVE"); hc.dimensions = "3D"
+    sp = hc.splines.new("POLY"); sp.points.add(23); sp.use_cyclic_u = True
+    for k in range(24):
+        a = 2 * math.pi * k / 24
+        sp.points[k].co = (4 * PX * math.cos(a), 0, (-rod - 17 + 15 * math.sin(a)) * PX, 1)
+    hc.bevel_depth = 0.8 * PX
+    hook = link(bpy.data.objects.new("hook_" + side, hc), cs)
+    hook.data.materials.append(M["steel"])
+    # The crystal hangs from the hook through a hole just under its flat top edge.
+    hole_z = -(rod + 30)                                   # px, the hook's lower bend
+    cry = make_crystal("crystal_" + side, cr, cs)
+    cry.location = (0, 0, (hole_z - crystal_hole_drop(cr)) * PX)
 
-bevel_r = MOD * BEVEL_T / 2
-shaft_pos = pos["gear_green"] + Vector((0, (crown_y + 2.2 + bevel_r) * PX, -(crown_r - 1.5) * PX))
-crystal_shaft = empty("crystal_shaft", loc=shaft_pos, parent=housing)
-crystal_shaft.rotation_mode = "XYZ"
-pin_bm = bmesh.new()
-pts = gear_profile(BEVEL_T, MOD)
-t = 3 * PX
-lo = [pin_bm.verts.new((x * PX, z * PX, -t)) for x, z in pts]
-hi = [pin_bm.verts.new((x * PX * 0.8, z * PX * 0.8, 0)) for x, z in pts]   # tapered = bevel look
-pin_bm.faces.new(lo[::-1]); pin_bm.faces.new(hi)
-for i in range(len(pts)):
-    j = (i + 1) % len(pts)
-    pin_bm.faces.new((lo[i], lo[j], hi[j], hi[i]))
-mesh_obj("bevel_pinion_purple", pin_bm, M["purple"], crystal_shaft)
-drop_px = (340 - 270) + 30
-cylinder("crystal_shaft_rod", 1.6, drop_px, M["steel"], crystal_shaft, axis="Z", segs=12,
-         center=(0, 0, -drop_px / 2 * PX))
-
-# Crystal: faceted octagon hanging from a jump ring on the shaft end.
-ring_z = -(drop_px + 6) * PX
-rc = bpy.data.curves.new("jump_ring", "CURVE"); rc.dimensions = "3D"
-rs = rc.splines.new("POLY"); rs.points.add(15); rs.use_cyclic_u = True
-for k in range(16):
-    a = 2 * math.pi * k / 16
-    rs.points[k].co = (4 * PX * math.cos(a), 0, 4 * PX * math.sin(a), 1)
-rc.bevel_depth = 0.9 * PX
-ring = link(bpy.data.objects.new("jump_ring", rc), crystal_shaft)
-ring.data.materials.append(M["steel"])
-ring.location = (0, 0, ring_z)
-bm = bmesh.new()
-R, T = 52 * PX, 16 * PX
-front = [bm.verts.new((R * math.cos(a), -T / 2, R * math.sin(a))) for a in [math.pi / 8 + k * math.pi / 4 for k in range(8)]]
-back = [bm.verts.new((v.co.x, T / 2, v.co.z)) for v in front]
-mid = [bm.verts.new((R * 1.08 * math.cos(a), 0, R * 1.08 * math.sin(a))) for a in [math.pi / 8 + k * math.pi / 4 for k in range(8)]]
-cf = bm.verts.new((0, -T * 0.9, 0)); cb = bm.verts.new((0, T * 0.9, 0))
-for i in range(8):
-    j = (i + 1) % 8
-    bm.faces.new((cf, front[j], front[i]))
-    bm.faces.new((cb, back[i], back[j]))
-    bm.faces.new((front[i], front[j], mid[j], mid[i]))
-    bm.faces.new((mid[i], mid[j], back[j], back[i]))
-crystal = mesh_obj("crystal", bm, M["crystal"], crystal_shaft)
-crystal.location = (0, 0, ring_z - (4 + 52 * 1.08) * PX)
-
-# ---------- housing ----------
-cylinder("housing_disc_front", 100, 3, M["clear"], housing, center=(0, -14 * PX, 0), segs=64)
-cylinder("housing_disc_back", 100, 3, M["clear"], housing, center=(0, 30 * PX, 0), segs=64)
-bm = bmesh.new()
-bmesh.ops.create_cone(bm, cap_ends=False, segments=64, radius1=100 * PX, radius2=100 * PX, depth=44 * PX)
-bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
-bmesh.ops.translate(bm, verts=bm.verts, vec=Vector((0, 8 * PX, 0)))
-mesh_obj("housing_rim", bm, M["clear"], housing, smooth=True)
-# metal motor plate behind the gears
-bm = bmesh.new()
-bmesh.ops.create_circle(bm, cap_ends=True, segments=40, radius=78 * PX)
-bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
-bmesh.ops.translate(bm, verts=bm.verts, vec=Vector((0, 26 * PX, 0)))
-mesh_obj("motor_plate", bm, M["steel"], housing)
-# screws
-for sx, sy in ((290, 205), (470, 205), (300, 260), (455, 260), (370, 120)):
-    cylinder("screw", 4, 3, M["steel"], housing, center=P(sx, sy) + Vector((0, -16 * PX, 0)), segs=12)
-# copper coil: helix of wire around a bobbin, tilted like the photo
-coil = empty("coil", loc=P(410, 192) + Vector((0, -2 * PX, 0)), parent=housing)
-coil.rotation_euler = (0, math.radians(-17), 0)
-cylinder("coil_bobbin", 13, 92, M["clear"], coil, axis="Z")
+# ---------- housing: peanut-shaped clear case ----------
+CIRCLES = [((0, 0), 100), ((-48, 112), 47), ((62, 62), 30)]   # main disc, lower-left lobe, right bump
+def inside(px, py):
+    return any((px - cx) ** 2 + (py - cy) ** 2 <= r * r for (cx, cy), r in CIRCLES)
+c0 = (-5, 25)
+outline = []
+for k in range(220):
+    a = 2 * math.pi * k / 220
+    r = 1.0
+    while inside(c0[0] + r * math.cos(a), c0[1] + r * math.sin(a)) and r < 400:
+        r += 0.5
+    x, y = c0[0] + r * math.cos(a), c0[1] + r * math.sin(a)
+    outline.append((x * PX, -y * PX))
+outline.reverse()
+prism("housing_case", outline, -14, 30, M["clear"], housing)
+# black coil frame and the arm down to the magnet wheel
+coil = empty("coil", loc=P(-9, -40, 8), parent=housing)
+coil.rotation_euler = (0, math.radians(5), 0)
+cylinder("coil_core", 20, 96, M["black"], coil, axis="X", segs=20)
 cu = bpy.data.curves.new("coil_wire", "CURVE"); cu.dimensions = "3D"
 sp = cu.splines.new("POLY")
-TURNS, PERT = 70, 24
+TURNS, PERT = 60, 24
 sp.points.add(TURNS * PERT - 1)
 for k in range(TURNS * PERT):
     a = 2 * math.pi * k / PERT
-    layer = 16
-    sp.points[k].co = (layer * PX * math.cos(a), layer * PX * math.sin(a), (-40 + 80 * k / (TURNS * PERT)) * PX, 1)
-cu.bevel_depth = 1.1 * PX; cu.bevel_resolution = 1
+    sp.points[k].co = ((-46 + 92 * k / (TURNS * PERT)) * PX, 21.5 * PX * math.cos(a), 21.5 * PX * math.sin(a), 1)
+cu.bevel_depth = 1.2 * PX; cu.bevel_resolution = 1
 wire = link(bpy.data.objects.new("coil_wire", cu), coil)
 wire.data.materials.append(M["copper"])
 for end in (-1, 1):
-    cylinder("coil_flange", 21, 3, M["steel"], coil, axis="Z", center=(0, 0, end * 44 * PX), segs=24)
-# neck + solar panel on top
+    box("coil_frame_end", (6, 40, 54), M["black"], coil, loc=(end * 52 * PX, 0, 0))
+box("coil_frame_bottom", (112, 30, 6), M["black"], coil, loc=(0, 0, -27 * PX))
+box("coil_frame_top", (112, 30, 4), M["steel"], coil, loc=(0, 0, 27 * PX))
+box("coil_arm", (14, 6, 40), M["black"], housing, loc=P(-28, -10, 20))
+box("circuit_chip", (14, 6, 8), M["black"], housing, loc=P(-40, -72, 8))
+# screw posts through the case, black socket heads on the room side
+for sx, sy in ((-3, -83), (55, -53), (-74, -40), (79, 35), (-70, 56), (9, 90), (-85, 125)):
+    cylinder("screw_post", 4, 44, M["clear"], housing, center=P(sx, sy, 8), segs=12)
+    cylinder("screw_head", 5, 3, M["screw"], housing, center=P(sx, sy, -15.5), segs=16)
+# suction cup on the back of the main disc
 bm = bmesh.new()
-bmesh.ops.create_cube(bm, size=1)
-bmesh.ops.scale(bm, vec=(60 * PX, 30 * PX, 40 * PX), verts=bm.verts)
-mesh_obj("neck", bm, M["clear"], housing).location = P(375, 108) + Vector((0, 8 * PX, 0))
-panel = empty("solar_panel", loc=P(372, 50) + Vector((0, 8 * PX, 0)), parent=housing)
-for nm, sz, y, m_ in (("panel_frame", (160, 26, 90), 0, "clear"), ("panel_back", (148, 2, 78), -9, "panelbk"),
-                      ("panel_cells", (148, 2, 78), 9, "panel")):
-    bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1)
-    bmesh.ops.scale(bm, vec=(sz[0] * PX, sz[1] * PX, sz[2] * PX), verts=bm.verts)
-    o = mesh_obj(nm, bm, M[m_], panel); o.location = (0, y * PX, 0)
-for k in range(1, 4):   # cell grid lines
-    bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1)
-    bmesh.ops.scale(bm, vec=(148 * PX, 1 * PX, 1.2 * PX), verts=bm.verts)
-    o = mesh_obj("cell_line", bm, M["steel"], panel); o.location = (0, 10.2 * PX, (-39 + k * 19.5) * PX)
-# suction cup on the window side of the panel
-bm = bmesh.new()
-bmesh.ops.create_cone(bm, cap_ends=True, segments=32, radius1=26 * PX, radius2=8 * PX, depth=12 * PX)
-bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(-math.pi / 2, 4, "X"))
-cup = mesh_obj("suction_cup", bm, M["clear"], panel, smooth=True); cup.location = (0, 27 * PX, 0)
-# spout under the disc that holds the crystal shaft
-bm = bmesh.new()
-bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=7 * PX, radius2=22 * PX, depth=46 * PX)
-spout = mesh_obj("spout", bm, M["clear"], housing, smooth=True)
-spout.location = Vector((shaft_pos.x, shaft_pos.y, shaft_pos.z - 26 * PX))
+bmesh.ops.create_cone(bm, cap_ends=True, segments=32, radius1=34 * PX, radius2=10 * PX, depth=12 * PX)
+bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
+cup = mesh_obj("suction_cup", bm, M["clear"], housing, smooth=True); cup.location = P(0, 0, 36)
+# U-shaped clear caps in front of each crown, and the sleeves the shafts run down
+SLEEVES = {   # side: list of (top y, bottom y, top r, bottom r) sections, collar (top y, height, r)
+    "right": ([(93, 125, 23, 12), (125, 140, 12, 12)], (140, 18, 23)),
+    "left":  ([(135, 255, 23, 16)], (255, 20, 23)),
+}
+for side, gear, ct, _, _, _, _, _ in OUTPUTS:
+    gx, gy = G[gear]["pos"]
+    sections, (coly, colh, colr) = SLEEVES[side]
+    cap_top, cap_bot, w = gy - 24, sections[0][0], 26
+    u = [(gx + w * math.cos(a), cap_top + w - w * math.sin(a)) for a in [math.pi * k / 16 for k in range(17)]]
+    u += [(gx - w, cap_bot), (gx + w, cap_bot)]
+    prism("u_cap_" + side, [(x * PX, -y * PX) for x, y in reversed(u)], -40, -14, M["clear"], housing)
+    sx = G[gear]["pos"].x
+    sdepth = CROWN_Y - 2.2 - MOD * 8 / 2
+    for i, (t, b, rt, rb) in enumerate(sections):
+        o = cylinder("sleeve_%s_%d" % (side, i), rb, b - t, M["clear"], housing, axis="Z", r2_px=rt, segs=32)
+        o.location = P(sx, (t + b) / 2, sdepth)
+    o = cylinder("collar_" + side, colr, colh, M["clear"], housing, axis="Z", segs=32)
+    o.location = P(sx, coly + colh / 2, sdepth)
+# hinged solar panel on top, tilted 20 degrees so the cells face up through the glass
+hinge = empty("solar_panel", loc=P(1, -88, 8), parent=housing)
+hinge.rotation_euler = (math.radians(20), 0, 0)
+box("panel_frame", (159, 24, 110), M["clear"], hinge, loc=(0, 0, 55 * PX))
+box("panel_back", (146, 2, 96), M["panelbk"], hinge, loc=(0, -9 * PX, 55 * PX))
+box("panel_cells", (146, 2, 96), M["panel"], hinge, loc=(0, 9 * PX, 55 * PX))
+for k in range(1, 3):
+    box("cell_band", (146, 1, 2), M["black"], hinge, loc=(0, -10.2 * PX, (55 - 48 + k * 32) * PX))
+for hx in (-52, 51):
+    box("hinge_clip", (22, 14, 18), M["black"], hinge, loc=(hx * PX, -6 * PX, 8 * PX))
+box("neck", (80, 30, 22), M["clear"], housing, loc=P(1, -95, 8))
 
 # ---------- animation: linear, seamless loop ----------
 def spin(obj, axis_idx, turns_, base=0.0):
@@ -317,20 +427,19 @@ def spin(obj, axis_idx, turns_, base=0.0):
     obj.rotation_euler[axis_idx] = base + turns_ * 2 * math.pi
     obj.keyframe_insert("rotation_euler", index=axis_idx, frame=FRAMES + 1)
 
-# Blender's Y-axis rotation is clockwise when viewed from -Y (the viewer), so flip sign for the photo view.
+# Blender's Y rotation is clockwise seen from the room, so the sign flips relative to the photo view.
 for name, s in shafts.items():
-    spin(s, 1, -turns[name], base=-phase[name])
-spin(crystal_shaft, 2, crystal_turns)
-# Make every key linear (works for both layered and legacy actions).
+    spin(s, 1, -G[name]["turns"], base=-G[name]["phase"])
+for side, (cs, turns) in crystal_shafts.items():
+    spin(cs, 2, turns)
 for ob in bpy.data.objects:
     ad = ob.animation_data
     if ad and ad.action:
         curves = []
-        if hasattr(ad.action, "fcurves"):
-            try:
-                curves = list(ad.action.fcurves)
-            except Exception:
-                curves = []
+        try:
+            curves = list(ad.action.fcurves)
+        except Exception:
+            pass
         if not curves and hasattr(ad.action, "layers"):
             for L in ad.action.layers:
                 for st in L.strips:
@@ -340,19 +449,25 @@ for ob in bpy.data.objects:
             for kp in fc.keyframe_points:
                 kp.interpolation = "LINEAR"
 
-print("TURNS PER LOOP:", {k: round(v, 3) for k, v in turns.items()}, "crystal:", crystal_turns)
+print("TURNS PER LOOP (%d s):" % LOOP_S, {n: round(G[n]["turns"], 3) for n in G},
+      {side: t for side, (_, t) in crystal_shafts.items()})
 
-# ---------- camera + light for preview ----------
+# ---------- camera + light for previews ----------
 cam = bpy.data.objects.new("preview_camera", bpy.data.cameras.new("preview_camera"))
 col.objects.link(cam)
-cam.location = (0.06, -0.40, -0.013)
-cam.rotation_euler = (math.radians(90), 0, math.radians(8.5))
 cam.data.lens = 85
+look = Vector((0, 0, -0.032))
+cam.location = (0.07, -0.47, -0.032)
+if "closeup" in argv:
+    cam.data.lens, cam.location, look = 150, (0.0, -0.40, -0.012), Vector((0, 0, -0.012))
+if "angle" in argv:   # like Astra's photo from below-left of the window
+    cam.data.lens, cam.location, look = 70, (-0.2, -0.32, -0.12), Vector((0, 0, -0.03))
+if "crystals" in argv:   # the two crystals up close
+    cam.data.lens, cam.location, look = 100, (0.02, -0.30, -0.085), Vector((0, 0, -0.085))
+cam.rotation_euler = (look - Vector(cam.location)).to_track_quat("-Z", "Y").to_euler()
 scn.camera = cam
 sun = bpy.data.objects.new("sun", bpy.data.lights.new("sun", "SUN"))
 sun.data.energy = 2.0
-scn.view_settings.view_transform = "Standard"
-scn.view_settings.exposure = -1.3
 sun.rotation_euler = (math.radians(60), math.radians(-20), math.radians(-30))
 col.objects.link(sun)
 key = bpy.data.objects.new("key_light", bpy.data.lights.new("key_light", "AREA"))
@@ -360,15 +475,37 @@ key.data.energy, key.data.size = 6, 0.3
 key.location = (-0.15, -0.3, 0.1)
 key.rotation_euler = (math.radians(70), 0, math.radians(-25))
 col.objects.link(key)
-if "closeup" in argv:
-    cam.data.lens = 220
-    cam.location = (0.0, -0.40, 0.0)
-    cam.rotation_euler = (math.radians(90), 0, 0)
-world =bpy.data.worlds.new("bg"); scn.world = world
+scn.view_settings.view_transform = "Standard"
+scn.view_settings.exposure = -1.3
+world = bpy.data.worlds.new("bg"); scn.world = world
 world.use_nodes = True
 world.node_tree.nodes["Background"].inputs[0].default_value = (0.15, 0.15, 0.17, 1)  # graphite gray
+if "crystals" in argv:   # overcast sky over a dark city, like Astra's window photos; the glass bends both
+    nt = world.node_tree
+    tc, sep = nt.nodes.new("ShaderNodeTexCoord"), nt.nodes.new("ShaderNodeSeparateXYZ")
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    nt.links.new(tc.outputs["Generated"], sep.inputs[0])
+    mr = nt.nodes.new("ShaderNodeMapRange")
+    mr.inputs["From Min"].default_value, mr.inputs["From Max"].default_value = -1, 1
+    nt.links.new(sep.outputs["Z"], mr.inputs["Value"])
+    nt.links.new(mr.outputs["Result"], ramp.inputs["Fac"])
+    els = ramp.color_ramp.elements
+    els[0].position, els[0].color = 0.0, (0.03, 0.03, 0.03, 1)
+    els[1].position, els[1].color = 0.47, (0.12, 0.1, 0.09, 1)
+    for pos, c in ((0.5, (0.55, 0.57, 0.6, 1)), (1.0, (0.85, 0.87, 0.9, 1))):
+        e = els.new(pos); e.color = c
+    nt.links.new(ramp.outputs["Color"], nt.nodes["Background"].inputs[0])
+    nt.nodes["Background"].inputs[1].default_value = 1.4
+# neon strips behind the camera give the glass something bright to bend and split
+for k, (rgb, x) in enumerate((((1, 0.1, 0.65), -0.12), ((0.2, 0.9, 1), 0.0), ((1, 0.9, 0.3), 0.12))):
+    strip = bpy.data.objects.new("neon_strip_%d" % k, bpy.data.lights.new("neon_strip_%d" % k, "AREA"))
+    strip.data.shape, strip.data.size, strip.data.size_y = "RECTANGLE", 0.02, 0.4
+    strip.data.color, strip.data.energy = rgb, 8
+    strip.location = (x, -0.35, -0.05)
+    strip.rotation_euler = (math.radians(90), 0, 0)
+    col.objects.link(strip)
 
-# Curves (coil wire, jump ring) become real meshes so Unity gets them.
+# Curves (coil wire, hooks) become real meshes so Unity gets them.
 dg = bpy.context.evaluated_depsgraph_get()
 for ob in [o for o in bpy.data.objects if o.type == "CURVE"]:
     me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
@@ -386,8 +523,8 @@ bpy.ops.wm.save_as_mainfile(filepath=blend)
 # ---------- FBX for Unity ----------
 fbx = os.path.join(OUT, f"rainbow-maker-{STAMP}.fbx")
 for o in bpy.data.objects:
-    o.select_set(o.type in {"MESH", "CURVE", "EMPTY"})
-bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, object_types={"EMPTY", "MESH", "OTHER"},
+    o.select_set(o.type in {"MESH", "EMPTY"})
+bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, object_types={"EMPTY", "MESH"},
                          apply_scale_options="FBX_SCALE_ALL", axis_forward="-Z", axis_up="Y",
                          bake_anim=True, bake_anim_use_all_actions=False, bake_anim_use_nla_strips=False,
                          # only the spinning shafts get keys; a keyed root would pin the model to the
@@ -399,6 +536,13 @@ print("WROTE", blend, fbx)
 if DO_RENDER or "still" in argv:
     eng = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
     scn.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in eng else "BLENDER_EEVEE"
+    if hasattr(scn.eevee, "use_raytracing"):
+        scn.eevee.use_raytracing = True
+    if "cycles" in argv:   # true glass with dispersion; slower
+        scn.render.engine = "CYCLES"
+        scn.cycles.samples = 192
+        scn.cycles.use_denoising = True
+        scn.cycles.max_bounces = scn.cycles.transmission_bounces = scn.cycles.glossy_bounces = 16
     scn.render.resolution_x, scn.render.resolution_y = 540, 960
     scn.render.film_transparent = False
 if "still" in argv:
@@ -407,7 +551,7 @@ if "still" in argv:
     scn.render.filepath = os.path.join(OUT, f"rainbow-maker-check-{STAMP}.png")
     bpy.ops.render.render(write_still=True)
 if DO_RENDER:
-    scn.frame_start, scn.frame_end = 1, 150
+    scn.frame_start, scn.frame_end = 1, 180
     scn.render.image_settings.file_format = "FFMPEG"
     scn.render.ffmpeg.format = "MPEG4"
     scn.render.ffmpeg.codec = "H264"

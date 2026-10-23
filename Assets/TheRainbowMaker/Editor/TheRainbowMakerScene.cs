@@ -1,6 +1,7 @@
-// Builds The Rainbow Maker's scene: a graphite room with a big window, the solar Rainbow Maker (modelled in Blender,
-// Art/rainbow-maker/) stuck to the glass, its baked gear loop on an Animator, and six coloured spot lights riding the
-// crystal shaft so the rainbows sweep the room. Run from the menu, the agent queue (menu TheRainbowMaker/Build Scene),
+// Builds The Rainbow Maker's scene: a graphite room with a big window, Astra's double-crystal solar Rainbow Maker
+// (modelled in Blender, Art/rainbow-maker/) stuck to the glass, its baked gear loop on an Animator, crystals with a
+// refracting crystal shader and their own reflection probe, and sixteen rainbow-streak projectors riding the two
+// crystal shafts so the spectra sweep the room as the crystals turn. Run from the menu, the agent queue (menu TheRainbowMaker/Build Scene),
 // or batchmode: -executeMethod TheRainbowMakerScene.BuildBatch (only while the project is closed).
 using System.IO;
 using System.Linq;
@@ -24,9 +25,10 @@ public static class TheRainbowMakerScene
     {
         ImportModel();
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        BuildRoom();
+        var sun = BuildRoom();
         var maker = PlaceMaker();
-        AddRainbowLights(maker);
+        AddRainbowStreaks(maker, sun);
+        BakeCrystalProbe(maker);
         PlaceSpawn();
         Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -49,24 +51,29 @@ public static class TheRainbowMakerScene
         imp.importCameras = false;
         imp.importLights = false;
         foreach (var (name, color, metal, smooth, alpha, emit) in new[] {
-            ("rm_clear_plastic", new Color(0.85f, 0.92f, 1f), 0f, 0.95f, 0.12f, 0f),
-            ("rm_crystal",       new Color(0.95f, 0.97f, 1f), 0.5f, 1f, 0.45f, 0.15f),
-            ("rm_gear_red",      new Color(0.95f, 0.05f, 0.12f), 0f, 0.6f, 1f, 0.25f),
-            ("rm_gear_orange",   new Color(1f, 0.38f, 0f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_clear_plastic", new Color(0.85f, 0.92f, 1f), 0f, 0.95f, 0.08f, 0f),
+            ("rm_gear_red",      new Color(0.85f, 0.08f, 0.05f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_orange",   new Color(1f, 0.35f, 0f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_yellow",   new Color(1f, 0.85f, 0f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_lime",     new Color(0.35f, 0.95f, 0.1f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_green",    new Color(0.1f, 0.85f, 0.15f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_blue",     new Color(0.05f, 0.35f, 1f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_gear_teal",     new Color(0f, 0.45f, 0.55f), 0f, 0.6f, 1f, 0.25f),
             ("rm_gear_purple",   new Color(0.55f, 0.1f, 0.9f), 0f, 0.6f, 1f, 0.25f),
-            ("rm_copper_wire",   new Color(0.95f, 0.5f, 0.3f), 1f, 0.75f, 1f, 0f),
-            ("rm_magnet_wheel",  new Color(0.35f, 0.25f, 0.15f), 0.8f, 0.65f, 1f, 0f),
+            ("rm_gear_coral",    new Color(0.95f, 0.3f, 0.25f), 0f, 0.6f, 1f, 0.25f),
+            ("rm_copper_wire",   new Color(0.75f, 0.38f, 0.2f), 1f, 0.7f, 1f, 0f),
+            ("rm_magnet_wheel",  new Color(0.7f, 0.55f, 0.3f), 0.9f, 0.7f, 1f, 0f),
             ("rm_steel",         new Color(0.8f, 0.8f, 0.82f), 1f, 0.8f, 1f, 0f),
-            ("rm_solar_cell",    new Color(0.05f, 0.08f, 0.2f), 0.3f, 0.85f, 1f, 0f),
-            ("rm_panel_back",    new Color(0.85f, 0.7f, 0.62f), 0f, 0.5f, 1f, 0f),
+            ("rm_black_metal",   new Color(0.03f, 0.03f, 0.035f), 0.6f, 0.6f, 1f, 0f),
+            ("rm_screw",         new Color(0.02f, 0.02f, 0.02f), 0.5f, 0.65f, 1f, 0f),
+            ("rm_solar_cell",    new Color(0.12f, 0.06f, 0.05f), 0.3f, 0.85f, 1f, 0f),
+            ("rm_panel_back",    new Color(0.2f, 0.11f, 0.08f), 0f, 0.5f, 1f, 0f),
         })
         {
             var m = MakeMat(MatDir + "/" + name.Replace('_', '-') + "-20261022.mat", color, metal, smooth, alpha, emit);
             imp.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name), m);
         }
+        imp.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), "rm_crystal"), CrystalMat());
         imp.SaveAndReimport();
 
         var clips = imp.defaultClipAnimations;
@@ -104,6 +111,27 @@ public static class TheRainbowMakerScene
     const string ClipPath = Root + "/RainbowMaker/rainbow-maker-loop-20261022.anim";
     static AnimationClip Clip() => AssetDatabase.LoadAssetAtPath<AnimationClip>(ClipPath);
 
+    // The crystals use their own shader (Shaders/rainbow-crystal-20261023.shader): refraction with colour splitting
+    // read from the crystal reflection probe, and sun sparkle on the facets.
+    static Material CrystalMat()
+    {
+        const string path = MatDir + "/rm-crystal-20261022.mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m == null) { m = new Material(Shader.Find("TheRainbowMaker/Crystal")); AssetDatabase.CreateAsset(m, path); }
+        m.shader = Shader.Find("TheRainbowMaker/Crystal");
+        m.shaderKeywords = new string[0];
+        m.renderQueue = -1;
+        m.SetColor("_Tint", new Color(0.96f, 0.98f, 1f));
+        m.SetFloat("_IOR", 1.55f);
+        m.SetFloat("_Dispersion", 0.12f);
+        m.SetFloat("_BodyAlpha", 0.4f);
+        m.SetFloat("_Cut", 2.5f);
+        m.SetFloat("_Sparkle", 10f);
+        m.SetFloat("_SparkleSharpness", 40f);
+        EditorUtility.SetDirty(m);
+        return m;
+    }
+
     static Material MakeMat(string path, Color color, float metal, float smooth, float alpha, float emit)
     {
         var dir = Path.GetDirectoryName(path).Replace('\\', '/');
@@ -135,7 +163,7 @@ public static class TheRainbowMakerScene
     }
 
     // ---------- room: graphite walls with neon trim, a big window on the north wall ----------
-    static void BuildRoom()
+    static Light BuildRoom()
     {
         var room = new GameObject("Room").transform;
         var wall = MakeMat(Root + "/Materials/graphite-20261022.mat", new Color(0.15f, 0.15f, 0.17f), 0f, 0.3f, 1f, 0f);
@@ -154,6 +182,7 @@ public static class TheRainbowMakerScene
         Box("WallNorthBelow", room, new Vector3(0, 0.4f, 5.05f), new Vector3(4, 0.8f, 0.1f), wall);
         Box("WallNorthAbove", room, new Vector3(0, 3.7f, 5.05f), new Vector3(4, 0.6f, 0.1f), wall);
         var g = Box("WindowGlass", room, new Vector3(0, 2.1f, 5.05f), new Vector3(4, 2.6f, 0.02f), glass);
+        g.layer = 1;   // TransparentFX: the rainbow projectors skip the glass
         Object.DestroyImmediate(g.GetComponent<Collider>());
         Box("WindowCollider", room, new Vector3(0, 2.1f, 5.05f), new Vector3(4, 2.6f, 0.1f), null).GetComponent<Renderer>().enabled = false;
         // neon trim around the window and along the floor
@@ -187,6 +216,20 @@ public static class TheRainbowMakerScene
         fill.intensity = 0.8f;
         fill.shadows = LightShadows.None;
         fill.transform.position = new Vector3(0, 3.5f, 1.5f);
+
+        // a real sky outside the window, so the glass and the crystal probe have something to show
+        const string skyPath = Root + "/Materials/sky-20261023.mat";
+        var sky = AssetDatabase.LoadAssetAtPath<Material>(skyPath);
+        if (sky == null) { sky = new Material(Shader.Find("Skybox/Procedural")); AssetDatabase.CreateAsset(sky, skyPath); }
+        sky.SetFloat("_SunSize", 0.04f);
+        sky.SetFloat("_AtmosphereThickness", 0.9f);
+        sky.SetColor("_SkyTint", new Color(0.55f, 0.6f, 0.7f));
+        sky.SetColor("_GroundColor", new Color(0.18f, 0.16f, 0.15f));
+        sky.SetFloat("_Exposure", 1.1f);
+        EditorUtility.SetDirty(sky);
+        RenderSettings.skybox = sky;
+        RenderSettings.sun = sun;
+        return sun;
     }
 
     static GameObject Box(string name, Transform parent, Vector3 pos, Vector3 size, Material mat)
@@ -209,47 +252,116 @@ public static class TheRainbowMakerScene
         maker.name = "RainbowMaker";
         maker.transform.localScale = Vector3.one * MakerScale;
         // The FBX root arrives lying down (Blender's up is the model's local +Z, its front local -Y), so stand it up
-        // and turn its front into the room (-Z). The suction cup (0.108 m behind the root) touches the glass at z 5.04.
+        // and turn its front into the room (-Z). Then the suction cup goes against the glass (z 5.04) and the whole
+        // thing is centred in the window opening (0.8 to 3.4 m).
         maker.transform.rotation = Quaternion.Euler(-90, 180, 0);
-        maker.transform.position = new Vector3(0, 2.2f, 4.93f);
+        maker.transform.position = Vector3.zero;
+        var b = Bounds(maker);
+        maker.transform.position = new Vector3(-b.center.x, 2.1f - b.center.y, 5.04f - b.max.z);
         var anim = maker.GetComponent<Animator>();   // not ??: Unity's missing components are "fake null"
         if (anim == null) anim = maker.AddComponent<Animator>();
         anim.runtimeAnimatorController = AssetDatabase.LoadAssetAtPath<AnimatorController>(Controller);
         anim.cullingMode = AnimatorCullingMode.CullCompletely;
-        var rs = maker.GetComponentsInChildren<Renderer>();
-        var b = rs[0].bounds;
-        foreach (var r in rs) b.Encapsulate(r.bounds);
-        Debug.Log("TheRainbowMakerScene: maker bounds " + b.center.ToString("F3") + " size " + b.size.ToString("F3")
-                  + " renderers " + rs.Length + " root scale " + maker.transform.localScale
-                  + " crystal " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal").position.ToString("F3")
-                  + " panel " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "solar_panel").position.ToString("F3")
-                  + " front " + maker.GetComponentsInChildren<Transform>().First(t => t.name == "housing_disc_front").position.ToString("F3"));
+        b = Bounds(maker);
+        Debug.Log("TheRainbowMakerScene: maker bounds " + b.min.ToString("F3") + " to " + b.max.ToString("F3"));
         return maker;
     }
 
-    // Six narrow spot lights, one per rainbow colour, ride the crystal shaft so the colours sweep the room as it turns.
-    static void AddRainbowLights(GameObject maker)
+    static Bounds Bounds(GameObject go)
     {
-        var crystal = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal");
-        var shaft = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_shaft");
-        Color[] rainbow = { new Color(1, 0.1f, 0.1f), new Color(1, 0.5f, 0), new Color(1, 0.95f, 0.1f),
-                            new Color(0.1f, 1, 0.2f), new Color(0.1f, 0.4f, 1), new Color(0.6f, 0.15f, 1) };
-        for (int i = 0; i < rainbow.Length; i++)
+        var rs = go.GetComponentsInChildren<Renderer>();
+        var b = rs[0].bounds;
+        foreach (var r in rs) b.Encapsulate(r.bounds);
+        return b;
+    }
+
+    // Real sun catchers scatter little spectra (red at one end, violet at the other) wherever a facet bends the sun.
+    // Each crystal gets eight Projectors, one per facet beam, riding its shaft: they leave the crystal roughly along
+    // the sunlight, bent by different facet angles, so as the crystal turns the streaks sweep the walls, floor and
+    // ceiling. The maker and the window are on TransparentFX, which the projectors skip.
+    static void AddRainbowStreaks(GameObject maker, Light sun)
+    {
+        foreach (var t in maker.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = 1;
+        var mat = StreakMat();
+        var down = sun.transform.forward;                     // the way the sunlight travels, into the room
+        var across = Vector3.Cross(down, Vector3.up).normalized;
+        foreach (var (side, seed) in new[] { ("left", 0), ("right", 1) })
         {
-            var l = new GameObject("rainbow_" + i).AddComponent<Light>();
-            l.type = LightType.Spot;
-            l.color = rainbow[i];
-            l.spotAngle = 9;
-            l.innerSpotAngle = 4;
-            l.range = 14;
-            l.intensity = 6f;
-            l.shadows = LightShadows.None;
-            l.renderMode = LightRenderMode.ForcePixel;
-            l.transform.position = crystal.position;
-            // fan the colours side by side (like a prism's spread), all thrown back into the room
-            l.transform.rotation = Quaternion.Euler(14 + i * 1.6f, 180 + 25 + i * 2.2f, 0);
-            l.transform.SetParent(shaft, true);
+            var crystal = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_" + side);
+            var shaft = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_shaft_" + side);
+            for (int k = 0; k < 8; k++)
+            {
+                var yaw = k * 45f + seed * 22.5f;               // one beam per facet direction around the crystal
+                var bend = 12f + ((k * 37 + seed * 11) % 5) * 7f;  // prism deviation, 12 to 40 degrees
+                var dir = Quaternion.AngleAxis(yaw, Vector3.up) * (Quaternion.AngleAxis(bend, across) * down);
+                var p = new GameObject("rainbow_" + side + "_" + k).AddComponent<Projector>();
+                p.material = mat;
+                p.nearClipPlane = 0.05f;
+                p.farClipPlane = 12f;
+                p.fieldOfView = 1.6f;
+                p.aspectRatio = 3.2f;                        // a stretched spectrum, wider than tall
+                p.ignoreLayers = 1 << 1;
+                p.transform.position = crystal.position;
+                p.transform.rotation = Quaternion.LookRotation(dir, Vector3.up) * Quaternion.Euler(0, 0, (k * 53) % 90 - 45);
+                p.transform.SetParent(shaft, true);
+            }
         }
+    }
+
+    static Material StreakMat()
+    {
+        const string texPath = Root + "/Textures/rainbow-streak-20261023.png";
+        if (!AssetDatabase.IsValidFolder(Root + "/Textures")) AssetDatabase.CreateFolder(Root, "Textures");
+        // a soft spectrum: red to violet across, a soft band down, black (= nothing, it adds) at every edge
+        const int w = 256, h = 64;
+        var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+        for (int x = 0; x < w; x++)
+            for (int y = 0; y < h; y++)
+            {
+                float u = x / (w - 1f), v = y / (h - 1f);
+                var hue = Color.HSVToRGB(Mathf.Lerp(0f, 0.78f, u), 0.85f, 1f);
+                float ends = Mathf.Pow(Mathf.Sin(Mathf.PI * u), 0.5f);
+                float band = Mathf.Exp(-Mathf.Pow((v - 0.5f) / 0.2f, 2));
+                bool edge = x < 2 || y < 2 || x >= w - 2 || y >= h - 2;
+                tex.SetPixel(x, y, edge ? Color.black : hue * ends * band);
+            }
+        File.WriteAllBytes(texPath, tex.EncodeToPNG());
+        Object.DestroyImmediate(tex);
+        AssetDatabase.ImportAsset(texPath);
+        var ti = (TextureImporter)AssetImporter.GetAtPath(texPath);
+        ti.wrapMode = TextureWrapMode.Clamp;
+        ti.textureCompression = TextureImporterCompression.Uncompressed;
+        ti.SaveAndReimport();
+
+        const string matPath = Root + "/Materials/rainbow-streak-20261023.mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+        if (m == null) { m = new Material(Shader.Find("TheRainbowMaker/RainbowStreak")); AssetDatabase.CreateAsset(m, matPath); }
+        m.SetTexture("_ShadowTex", AssetDatabase.LoadAssetAtPath<Texture2D>(texPath));
+        m.SetFloat("_Strength", 1.6f);
+        EditorUtility.SetDirty(m);
+        return m;
+    }
+
+    // The crystal shader looks through the glass at this probe: the room, the window and the sky, seen from the
+    // crystals (without the crystals themselves).
+    static void BakeCrystalProbe(GameObject maker)
+    {
+        var crystals = maker.GetComponentsInChildren<Renderer>().Where(r => r.name.StartsWith("crystal_")).ToList();
+        var probe = new GameObject("CrystalProbe").AddComponent<ReflectionProbe>();
+        probe.transform.position = crystals.Select(r => r.bounds.center).Aggregate((a, b) => a + b) / crystals.Count
+                                   + new Vector3(0, 0, -0.05f);
+        probe.size = new Vector3(10, 4.2f, 10);
+        probe.center = new Vector3(0, 2.1f, 0) - probe.transform.position;
+        probe.resolution = 256;
+        probe.mode = UnityEngine.Rendering.ReflectionProbeMode.Custom;
+        if (!AssetDatabase.IsValidFolder(Root + "/Lighting")) AssetDatabase.CreateFolder(Root, "Lighting");
+        const string path = Root + "/Lighting/crystal-probe-20261023.exr";
+        foreach (var r in crystals) r.enabled = false;
+        var baked = Lightmapping.BakeReflectionProbe(probe, path);
+        foreach (var r in crystals) r.enabled = true;
+        AssetDatabase.ImportAsset(path);
+        probe.customBakedTexture = AssetDatabase.LoadAssetAtPath<Texture>(path);
+        Debug.Log("TheRainbowMakerScene: crystal probe baked " + baked + " -> " + (probe.customBakedTexture ? path : "missing"));
     }
 
     static void PlaceSpawn()
@@ -268,21 +380,22 @@ public static class TheRainbowMakerScene
         var clip = Clip();
         var camGo = new GameObject("snapshot");
         var cam = camGo.AddComponent<Camera>();
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.55f, 0.75f, 0.95f);
+        cam.clearFlags = CameraClearFlags.Skybox;
+        var c = Bounds(maker).center;
+        var cl = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_left").position;
+        var cr = maker.GetComponentsInChildren<Transform>().First(t => t.name == "crystal_right").position;
+        var cc = (cl + cr) / 2;
         var shots = new[] {
             ("room", new Vector3(0, 1.6f, -2.5f), new Vector3(0, 2f, 5f), 60f, 0f),
-            ("closeup-a", new Vector3(0.25f, 2.0f, 3.2f), new Vector3(0, 2.05f, 4.9f), 45f, 0f),
-            ("closeup-b", new Vector3(0.25f, 2.0f, 3.2f), new Vector3(0, 2.05f, 4.9f), 45f, 0.5f) };
+            ("closeup-a", c + new Vector3(0.25f, -0.1f, -1.9f), c, 50f, 0f),
+            ("closeup-b", c + new Vector3(0.25f, -0.1f, -1.9f), c, 50f, 0.5f),
+            ("angle", c + new Vector3(-1.1f, -0.7f, -1.5f), c, 50f, 1.2f),
+            ("crystals", cc + new Vector3(0.05f, 0.05f, -0.9f), cc, 35f, 2f),
+            ("rainbows-a", new Vector3(4.2f, 1.7f, -4.2f), new Vector3(-1.5f, 1.2f, 1.5f), 75f, 3f),
+            ("rainbows-b", new Vector3(4.2f, 1.7f, -4.2f), new Vector3(-1.5f, 1.2f, 1.5f), 75f, 4.5f) };
         foreach (var (n, pos, look, fov, t) in shots)
         {
             clip.SampleAnimation(maker, t);
-            var rs = maker.GetComponentsInChildren<Renderer>();
-            var b = rs[0].bounds;
-            foreach (var r in rs) b.Encapsulate(r.bounds);
-            Debug.Log("TheRainbowMakerScene: snapshot " + n + " bounds " + b.center.ToString("F3") + " size " + b.size.ToString("F3")
-                      + " first " + rs[0].name + " enabled " + rs[0].enabled + " shader " + rs[0].sharedMaterial?.shader?.name
-                      + " layer " + rs[0].gameObject.layer + " active " + rs[0].gameObject.activeInHierarchy);
             cam.transform.position = pos;
             cam.transform.LookAt(look);
             cam.fieldOfView = fov;
