@@ -7,6 +7,36 @@ rainbows across the room.
 
 A model of Astra's own double-crystal Kikkerland solar Rainbow Maker whose gears really turn.
 
+### Reflective glass model study — 2026-10-30
+
+The colored gears now use polished, transmissive glass with beveled edges and shallow surface relief.
+Inverted gear normals are corrected, the acrylic casing is hollow, and the newer 120-second motion and
+crystal cut are preserved. Final materials are saved after the finishing pass.
+
+[Animated GLB](Art/rainbow-maker/rainbow-maker-glass-20261030.glb) ·
+[Editable Blender scene](Art/rainbow-maker/rainbow-maker-glass-20261030.blend) ·
+[Glass close-up](Art/rainbow-maker/rainbow-maker-glass-detail-20261030.png)
+
+![Polished glass gear study](Art/rainbow-maker/rainbow-maker-preview-20261030.png)
+
+The GLB is 3.98 MB with one 120-second animation and 117,344 triangles. Use a renderer supporting
+glTF transmission, volume, and IOR, with a visible background and contrasting reflection lights.
+The web copy uses a low-alpha casing so its glass gears remain visible through it.
+The Blender scene has full refractive acrylic and a Cycles RGB dispersion approximation for the crystals.
+
+This is the standalone model for portfolio review. The existing Unity scene, FBX and generated Unity
+materials retain their previous version; importing the new FBX alone does not transfer these glass shaders.
+No world upload or portfolio publication is included.
+
+Rebuild with Blender 4.5 using the existing generator and its adjacent finishing helper:
+
+```text
+blender --background --python Art/rainbow-maker/build-rainbow-maker-20261022.py -- /absolute/output/path studio still 1
+```
+
+Use an absolute output directory. The `studio` flag includes the detailed copper coil and product lighting.
+The GLB/FBX export includes only the model subtree. Add `gearview` for a close-up or `noexport` for render iteration.
+
 <table>
 <tr>
 <th width="50%">The gear train</th>
