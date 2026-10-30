@@ -7,13 +7,13 @@ import bpy, bmesh, math, sys, os
 from mathutils import Vector, Matrix
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-OUT = argv[0] if argv else os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.abspath(argv[0]) if argv else os.path.dirname(os.path.abspath(__file__))
 DO_RENDER = "render" in argv
 STAMP = "20261022"   # file names stay the same so Unity keeps the FBX's GUID
 
 PX = 0.000264
 FPS = 30
-LOOP_S = 60                     # seamless loop length
+LOOP_S = 120                    # seamless loop length; Astra's real one turns about this slowly (2026-10-23)
 FRAMES = FPS * LOOP_S
 
 # ---------- scene ----------
@@ -108,7 +108,7 @@ def box(name, size_px, material, parent=None, loc=(0, 0, 0)):
     return o
 
 def prism(name, outline_xz, y0_px, y1_px, material, parent=None):
-    """Extrude a 2D outline (Blender x,z in metres) between depths y0..y1 (px); triangulated for Unity."""
+    """Extrude a 2D outline (Blender x,z in metres) between depths y0..y1 (px)."""
     bm = bmesh.new()
     a = [bm.verts.new((x, y0_px * PX, z)) for x, z in outline_xz]
     b = [bm.verts.new((x, y1_px * PX, z)) for x, z in outline_xz]
@@ -117,7 +117,6 @@ def prism(name, outline_xz, y0_px, y1_px, material, parent=None):
     for i in range(n):
         j = (i + 1) % n
         bm.faces.new((a[i], a[j], b[j], b[i]))
-    bmesh.ops.triangulate(bm, faces=bm.faces[:])
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     return mesh_obj(name, bm, material, parent)
 
@@ -146,7 +145,9 @@ def spur(name, n, thick_px, material, parent, y_off_px=0.0):
     for i in range(len(pts)):
         j = (i + 1) % len(pts)
         bm.faces.new((top[i], top[j], bot[j], bot[i]))
-    bmesh.ops.triangulate(bm, faces=bm.faces[:2])
+    # Dielectric refraction needs an outward closed surface. Inverted faces used to cause
+    # black diagonal artifacts that were mistaken for cut-glass facets.
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     return mesh_obj(name, bm, material, parent)
 
 def crown(name, n, y_px, material, parent):
@@ -175,7 +176,6 @@ def bevel_pinion(name, n, material, parent):
     for i in range(len(pts)):
         j = (i + 1) % len(pts)
         bm.faces.new((lo[i], lo[j], hi[j], hi[i]))
-    bmesh.ops.triangulate(bm, faces=bm.faces[:2])
     return mesh_obj(name, bm, material, parent)
 
 # ---------- crystals ----------
@@ -188,10 +188,12 @@ def crystal_hole_drop(r_px):
 
 def make_crystal(name, r_px, parent):
     R = r_px * PX
+    # A steep star pyramid in the middle (about 22 degrees) and a flatter ring of bevels out to the rim, as in
+    # Astra's photos: the steep facets bounce light around inside, which gives the patchwork and the fire.
     girdle = 0.05 * R          # half thickness of the rim
-    ring_depth = 0.24 * R      # where the bevels meet the star
-    apex = 0.32 * R            # centre of each face (total thickness 0.64 R)
-    ring_r = 0.66
+    ring_depth = 0.12 * R      # where the bevels meet the star
+    apex = 0.36 * R            # centre of each face (total thickness 0.72 R, about 11 mm)
+    ring_r = 0.6
     corner = [math.radians(22.5 + 45 * k) for k in range(8)]   # flat top edge between corners 1 and 2
     mid = [math.radians(45 + 45 * k) for k in range(8)]
     bm = bmesh.new()
@@ -516,49 +518,363 @@ for ob in [o for o in bpy.data.objects if o.type == "CURVE"]:
     bpy.data.objects.remove(ob)
     new.name = new.name.split(".")[0]
 
-os.makedirs(OUT, exist_ok=True)
-blend = os.path.join(OUT, f"rainbow-maker-{STAMP}.blend")
-bpy.ops.wm.save_as_mainfile(filepath=blend)
+# ---------- photographic details; final exporter keeps only the model subtree ----------
+REAL = "real" in argv or "studio" in argv
+REAL_STAMP = "20261023"
+if REAL:
+    import random
+    rnd = random.Random(7)
 
-# ---------- FBX for Unity ----------
-fbx = os.path.join(OUT, f"rainbow-maker-{STAMP}.fbx")
-for o in bpy.data.objects:
-    o.select_set(o.type in {"MESH", "EMPTY"})
-bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, object_types={"EMPTY", "MESH"},
-                         apply_scale_options="FBX_SCALE_ALL", axis_forward="-Z", axis_up="Y",
-                         bake_anim=True, bake_anim_use_all_actions=False, bake_anim_use_nla_strips=False,
-                         # only the spinning shafts get keys; a keyed root would pin the model to the
-                         # world origin at 1x scale when Unity's Animator plays the clip
-                         bake_anim_force_startend_keying=False, bake_anim_simplify_factor=0.0,
-                         use_mesh_modifiers=True, add_leaf_bones=False)
-print("WROTE", blend, fbx)
+    def bsdf(m):
+        return m.node_tree.nodes["Principled BSDF"]
+
+    def setv(m, **vals):
+        b = bsdf(m)
+        for k, v in vals.items():
+            name = k.replace("_", " ")
+            if name in b.inputs:
+                b.inputs[name].default_value = v
+
+    def add_bump(m, node, out, strength, distance=0.0005):
+        nt = m.node_tree
+        bp = nt.nodes.new("ShaderNodeBump")
+        bp.inputs["Strength"].default_value = strength
+        bp.inputs["Distance"].default_value = distance
+        nt.links.new(node.outputs[out], bp.inputs["Height"])
+        nt.links.new(bp.outputs["Normal"], bsdf(m).inputs["Normal"])
+
+    def noise_bump(m, scale, strength):
+        # object coordinates (metres): the default box-fitted coordinates stretch noise on a 1 mm gear into streaks
+        nt = m.node_tree
+        tc, n = nt.nodes.new("ShaderNodeTexCoord"), nt.nodes.new("ShaderNodeTexNoise")
+        nt.links.new(tc.outputs["Object"], n.inputs["Vector"])
+        n.inputs["Scale"].default_value = scale
+        add_bump(m, n, "Fac", strength)
+
+    # The case, caps, neck and panel frame are thin hollow acrylic shells: shiny and see-through without bending
+    # what's inside (the model's solid blocks would refract like lumps of glass). The sleeves and collars are solid
+    # clear plastic, so they get real refraction.
+    solid_acrylic = mat("rm_solid_acrylic", (0.98, 0.99, 1.0), rough=0.02)
+    setv(solid_acrylic, Transmission_Weight=1.0, IOR=1.49)
+    for o in bpy.data.objects:
+        if o.type == "MESH" and o.name.startswith(("sleeve_", "collar_", "screw_post")):
+            o.data.materials[0] = solid_acrylic
+    setv(M["clear"], Roughness=0.02, Coat_Weight=1.0, Base_Color=(0.98, 0.99, 1, 1))
+    nt = M["clear"].node_tree
+    # a clear shell shows where you see it edge-on (rims, curves), almost nothing where you look straight through
+    lw, edge = nt.nodes.new("ShaderNodeLayerWeight"), nt.nodes.new("ShaderNodeMapRange")
+    lw.inputs["Blend"].default_value = 0.3
+    edge.inputs["To Min"].default_value, edge.inputs["To Max"].default_value = 0.03, 0.7
+    nt.links.new(lw.outputs["Facing"], edge.inputs["Value"])
+    # only the camera sees the rims: to light they stay see-through, or they cast dark lines across the gears
+    lp, only_cam = nt.nodes.new("ShaderNodeLightPath"), nt.nodes.new("ShaderNodeMix")
+    only_cam.data_type = "FLOAT"
+    only_cam.inputs["A"].default_value = 0.02
+    nt.links.new(lp.outputs["Is Camera Ray"], only_cam.inputs["Factor"])
+    nt.links.new(edge.outputs["Result"], only_cam.inputs["B"])
+    nt.links.new(only_cam.outputs["Result"], bsdf(M["clear"]).inputs["Alpha"])
+    # round moulded dimples (the circles all over the case in Astra's photos)
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    vor = nt.nodes.new("ShaderNodeTexVoronoi")
+    vor.inputs["Scale"].default_value = 160
+    nt.links.new(tc.outputs["Object"], vor.inputs["Vector"])
+    ring = nt.nodes.new("ShaderNodeMapRange")
+    ring.inputs["From Min"].default_value, ring.inputs["From Max"].default_value = 0.22, 0.3
+    ring.inputs["To Min"].default_value, ring.inputs["To Max"].default_value = 1, 0
+    nt.links.new(vor.outputs["Distance"], ring.inputs["Value"])
+    add_bump(M["clear"], ring, "Result", 0.05, 0.0001)   # faint: strong dimples mirror the street as dark arcs
+    # gears: glossy translucent moulded plastic that glows when the window lights it from behind
+    for k in ("red", "orange", "yellow", "lime", "green", "blue", "teal", "purple", "coral"):
+        if "plaingears" not in argv:   # glassy gears that bend the light through their facets (Astra's pick)
+            setv(M[k], Transmission_Weight=0.6, Roughness=0.15, IOR=1.46, Coat_Weight=0.3)
+            continue
+        # a little light glows through the plastic (subsurface) rather than refracting through 1 mm of gear
+        setv(M[k], Subsurface_Weight=0.2, Subsurface_Scale=0.002, Roughness=0.15, IOR=1.46, Coat_Weight=0.3)
+        bsdf(M[k]).inputs["Subsurface Radius"].default_value = (1.0, 1.0, 1.0)
+        noise_bump(M[k], 2500, 0.04)
+    setv(M["copper"], Roughness=0.25, Base_Color=(0.72, 0.33, 0.17, 1))
+
+    # The spool, as on Astra's unit: hundreds of turns of fine enamelled copper. The model's single thick helix
+    # reads as a spring up close, so the render replaces it with real strands: two layers of 0.2 mm wire, each
+    # turn its own loop, wavering a little like hand-guided winding, under glossy enamel.
+    bpy.data.objects["coil_wire"].hide_render = True
+    COIL_L = 92
+    WIRE_R, PITCH = 0.36, 0.76                                    # px: 0.095 mm radius, 0.2 mm between turns
+    wire_mat = mat("rm_enamel_wire", (0.6, 0.22, 0.08), metal=1.0, rough=0.2)
+    setv(wire_mat, Coat_Weight=0.8, Coat_Roughness=0.05, Coat_Tint=(1.0, 0.75, 0.55, 1))   # the enamel
+    wob = random.Random(3)
+    for layer, (radius, phase) in enumerate(((20.3, 0.0), (21.1, 0.5))):
+        turns_n = int(COIL_L / PITCH) - 2
+        per_turn = 24
+        cu = bpy.data.curves.new("coil_strands_%d" % layer, "CURVE"); cu.dimensions = "3D"
+        sp = cu.splines.new("POLY")
+        sp.points.add(turns_n * per_turn - 1)
+        x0 = -COIL_L / 2 + 1 + phase * PITCH
+        for k in range(turns_n * per_turn):
+            a = 2 * math.pi * k / per_turn
+            x = x0 + PITCH * k / per_turn + wob.uniform(-0.03, 0.03)
+            r = radius + wob.uniform(-0.04, 0.04)
+            sp.points[k].co = (x * PX, r * PX * math.cos(a), r * PX * math.sin(a), 1)
+        cu.bevel_depth = WIRE_R * PX
+        cu.bevel_resolution = 3
+        strands = link(bpy.data.objects.new("coil_strands_%d" % layer, cu), bpy.data.objects["coil"])
+        strands.data.materials.append(wire_mat)
+    # the wire's two tails run off the end of the spool
+    for k, (xe, ze) in enumerate(((-46, 24), (46, 24))):
+        cu = bpy.data.curves.new("coil_tail_%d" % k, "CURVE"); cu.dimensions = "3D"
+        sp = cu.splines.new("NURBS"); sp.points.add(3)
+        for i, pt in enumerate(((xe, 0, 21), (xe * 1.05, 6, 26), (xe * 0.9, 14, 29), (xe * 0.6, 18, 30))):
+            sp.points[i].co = (pt[0] * PX, pt[1] * PX, pt[2] * PX, 1)
+        cu.bevel_depth = WIRE_R * PX
+        tail = link(bpy.data.objects.new("coil_tail_%d" % k, cu), bpy.data.objects["coil"])
+        tail.data.materials.append(wire_mat)
+    setv(M["brass"], Roughness=0.3)
+    setv(M["steel"], Roughness=0.12)
+    setv(M["black"], Roughness=0.5, Metallic=0.4)
+    noise_bump(M["black"], 4000, 0.08)
+    setv(M["screw"], Roughness=0.35, Metallic=0.7)
+    setv(M["panel"], Base_Color=(0.08, 0.05, 0.045, 1), Roughness=0.06, Coat_Weight=1.0)
+    setv(M["panelbk"], Base_Color=(0.06, 0.035, 0.03, 1), Roughness=0.3)
+
+    def solid(name, size, loc, material):
+        bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1)
+        bmesh.ops.scale(bm, vec=size, verts=bm.verts)
+        o = mesh_obj(name, bm, material); o.location = loc
+        return o
+
+    def lambert(name, rgb, rough=0.8, emit=None, strength=0.0):
+        m = mat(name, rgb, rough=rough)
+        if emit:
+            setv(m, Emission_Color=(*emit, 1), Emission_Strength=strength)
+        return m
+
+    # the window pane the suction cup holds on to, with raindrops on the outside
+    pane_y = 42 * PX
+    # the pane is pure see-through: a reflecting pane would mirror the sparkle lights as a white haze
+    glass = mat("window_glass", (1, 1, 1), rough=0.0)
+    gn = glass.node_tree
+    clear_pane = gn.nodes.new("ShaderNodeBsdfTransparent")
+    gn.links.new(clear_pane.outputs[0], gn.nodes["Material Output"].inputs["Surface"])
+    solid("window_pane", (1.2, 0.005, 1.2), (0, pane_y + 0.0025, 0), glass)
+    water = mat("rain", (1, 1, 1), rough=0.0)
+    setv(water, Transmission_Weight=1.0, IOR=1.33)
+    for k in range(110):
+        r = rnd.uniform(0.0004, 0.0016)
+        bm = bmesh.new()
+        bmesh.ops.create_uvsphere(bm, u_segments=12, v_segments=8, radius=r)
+        bmesh.ops.scale(bm, vec=(1, 0.3, 1.2), verts=bm.verts)      # flattened beads, slightly run down
+        d = mesh_obj("raindrop", bm, water, smooth=True)
+        # rain gathers in loose vertical runs, like on Astra's window
+        run = rnd.choice((-0.19, -0.16, -0.11, 0.12, 0.17, 0.2)) if k % 3 else rnd.uniform(-0.22, 0.22)
+        d.location = (run + rnd.uniform(-0.006, 0.006), pane_y + 0.005 + r * 0.2, rnd.uniform(-0.2, 0.14))
+    # overcast sky over a city: blocks far outside, blurred by the lens like in the photos
+    w = scn.world.node_tree
+    tcw, sep, mr = w.nodes.new("ShaderNodeTexCoord"), w.nodes.new("ShaderNodeSeparateXYZ"), w.nodes.new("ShaderNodeMapRange")
+    ramp = w.nodes.new("ShaderNodeValToRGB")
+    w.links.new(tcw.outputs["Generated"], sep.inputs[0])
+    mr.inputs["From Min"].default_value, mr.inputs["From Max"].default_value = -1, 1
+    w.links.new(sep.outputs["Z"], mr.inputs["Value"])
+    w.links.new(mr.outputs["Result"], ramp.inputs["Fac"])
+    els = ramp.color_ramp.elements
+    els[0].position, els[0].color = 0.0, (0.05, 0.05, 0.05, 1)
+    els[1].position, els[1].color = 0.5, (0.5, 0.52, 0.54, 1)
+    e = els.new(0.62); e.color = (0.8, 0.82, 0.84, 1)
+    e = els.new(1.0); e.color = (0.86, 0.87, 0.89, 1)
+    w.links.new(ramp.outputs["Color"], w.nodes["Background"].inputs[0])
+    w.nodes["Background"].inputs[1].default_value = 1.3
+    concrete = [lambert("concrete_%d" % k, c, rough=0.5) for k, c in enumerate(
+        ((0.18, 0.18, 0.19), (0.12, 0.11, 0.1), (0.25, 0.22, 0.2), (0.09, 0.1, 0.12), (0.22, 0.14, 0.11),
+         (0.3, 0.3, 0.31)))]
+    roof = lambert("wet_roof", (0.35, 0.35, 0.37), rough=0.2)
+    for k in range(60):
+        dist = rnd.uniform(10, 90)
+        x = rnd.uniform(-60, 60)
+        # Astra looks down over rooftops: near buildings stay below eye level, only far ones reach above it
+        h = rnd.uniform(6, 22) if dist < 45 else rnd.uniform(10, 36)
+        h = min(h, 16 + dist * 0.12)
+        wdt, dep = rnd.uniform(6, 26), rnd.uniform(6, 20)
+        solid("building", (wdt, dep, h), (x, dist + dep / 2, -18 + h / 2), rnd.choice(concrete))
+    solid("rooftop_below", (24, 16, 0.4), (-6, 9, -6.5), roof)
+    solid("street", (300, 300, 0.2), (0, 120, -18.2), lambert("asphalt", (0.07, 0.07, 0.075), rough=0.6))
+    warm = lambert("street_light", (1, 0.7, 0.4), emit=(1, 0.62, 0.3), strength=40)
+    for k in range(18):
+        bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=6, radius=0.25)
+        s = mesh_obj("street_light", bm, warm)
+        s.location = (rnd.uniform(-35, 35), rnd.uniform(18, 60), rnd.uniform(-16, -11))
+    # light: the overcast sky, a little room light from behind the camera, and a low sun breaking through the
+    # clouds up to the right. The sun is a glowing disc (not a lamp) so the glass can bend it into flashes.
+    for o in bpy.data.objects:
+        if o.type == "LIGHT":
+            o.hide_render = True
+    sun_mat = lambert("sun_disc", (1, 1, 1), emit=(1.0, 0.93, 0.8), strength=15000)
+    bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=24, v_segments=12, radius=3.0)
+    sun_disc = mesh_obj("sun_disc", bm, sun_mat)
+    SUN_POS = Vector((30, 70, 28))     # up and to the right, outside the window, near enough the line of sight
+    sun_disc.location = SUN_POS        # that the facets can bend it into fire
+    # Sparkle lights: a flat pendant mostly mirrors what is behind the viewer, so a ring of small bright lights
+    # sits there (sunlit room, lamps), the way jewellers light a stone. Each facet catches a different one as the
+    # crystal turns, and that is the twinkle.
+    spark_mat = lambert("sparkle_light", (1, 1, 1), emit=(1.0, 0.96, 0.9), strength=400)
+    for k in range(10):
+        a = 2 * math.pi * k / 10
+        tilt = math.radians(18 if k % 2 else 34)
+        d = Vector((math.sin(tilt) * math.cos(a), -math.cos(tilt), math.sin(tilt) * math.sin(a)))
+        bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=12, v_segments=8, radius=0.035)
+        s = mesh_obj("sparkle_light_%d" % k, bm, spark_mat)
+        s.location = Vector((0, 0, -0.08)) + d * 1.4
+        # seen only in reflections and through glass: the lights themselves stay out of the picture and
+        # don't wash the window and raindrops (like studio lights behind black cards)
+        s.visible_camera = s.visible_diffuse = s.visible_shadow = s.visible_volume_scatter = False
+    b_c = bsdf(M["crystal"])
+    print("CRYSTAL INPUTS", [(i.name, i.default_value) for i in b_c.inputs if i.name in ("IOR", "Dispersion", "Transmission Weight", "Roughness")])
+    # Facets only glitter against contrast, so the sky gets a bright glow around the sun and ragged clouds,
+    # bright where they thin and dark where they bank up.
+    sky_dir = w.nodes.new("ShaderNodeVectorMath"); sky_dir.operation = "NORMALIZE"
+    w.links.new(tcw.outputs["Generated"], sky_dir.inputs[0])
+    toward = w.nodes.new("ShaderNodeVectorMath"); toward.operation = "DOT_PRODUCT"
+    toward.inputs[1].default_value = SUN_POS.normalized()
+    w.links.new(sky_dir.outputs["Vector"], toward.inputs[0])
+    halo = w.nodes.new("ShaderNodeMapRange")
+    halo.inputs["From Min"].default_value, halo.inputs["From Max"].default_value = 0.75, 1.0
+    halo.inputs["To Min"].default_value, halo.inputs["To Max"].default_value = 0.0, 3.0
+    w.links.new(toward.outputs["Value"], halo.inputs["Value"])
+    clouds = w.nodes.new("ShaderNodeTexNoise")
+    clouds.inputs["Scale"].default_value = 2.5
+    clouds.inputs["Detail"].default_value = 6
+    clouds.inputs["Roughness"].default_value = 0.6
+    w.links.new(tcw.outputs["Generated"], clouds.inputs["Vector"])
+    cloud_c = w.nodes.new("ShaderNodeMapRange")
+    cloud_c.inputs["From Min"].default_value, cloud_c.inputs["From Max"].default_value = 0.35, 0.65
+    cloud_c.inputs["To Min"].default_value, cloud_c.inputs["To Max"].default_value = 0.45, 1.3
+    w.links.new(clouds.outputs["Fac"], cloud_c.inputs["Value"])
+    bright = w.nodes.new("ShaderNodeMath"); bright.operation = "ADD"
+    w.links.new(cloud_c.outputs["Result"], bright.inputs[0])
+    w.links.new(halo.outputs["Result"], bright.inputs[1])
+    # only above the horizon: the city below keeps the plain ramp
+    above = w.nodes.new("ShaderNodeMath"); above.operation = "GREATER_THAN"; above.inputs[1].default_value = 0.0
+    w.links.new(sep.outputs["Z"], above.inputs[0])
+    gain = w.nodes.new("ShaderNodeMath"); gain.operation = "MULTIPLY_ADD"
+    w.links.new(above.outputs["Value"], gain.inputs[0])
+    w.links.new(bright.outputs["Value"], gain.inputs[1])
+    gain.inputs[2].default_value = 1.0
+    skycol = w.nodes.new("ShaderNodeMix"); skycol.data_type = "RGBA"; skycol.blend_type = "MULTIPLY"
+    skycol.inputs["Factor"].default_value = 1.0
+    w.links.new(ramp.outputs["Color"], skycol.inputs[6])
+    tint = w.nodes.new("ShaderNodeCombineColor")
+    for i in range(3):
+        w.links.new(gain.outputs["Value"], tint.inputs[i])
+    w.links.new(tint.outputs["Color"], skycol.inputs[7])
+    w.links.new(skycol.outputs[2], w.nodes["Background"].inputs[0])
+    # Diamond-grade crystal. Blender 4.5's glass has no dispersion control, so the crystal is three glasses added
+    # together, red, green and blue, each bending light a little differently: white light fans out into colour
+    # at every facet edge, and a facet that catches the sun throws real rainbow fire.
+    cn = M["crystal"].node_tree
+    out = cn.nodes["Material Output"]
+    glasses = []
+    for rgb, ior in (((1, 0, 0, 1), 1.70), ((0, 1, 0, 1), 1.75), ((0, 0, 1, 1), 1.82)):
+        g = cn.nodes.new("ShaderNodeBsdfGlass")
+        g.distribution = "GGX"
+        g.inputs["Color"].default_value = rgb
+        g.inputs["Roughness"].default_value = 0.0
+        g.inputs["IOR"].default_value = ior
+        glasses.append(g)
+    add1, add2 = cn.nodes.new("ShaderNodeAddShader"), cn.nodes.new("ShaderNodeAddShader")
+    cn.links.new(glasses[0].outputs[0], add1.inputs[0])
+    cn.links.new(glasses[1].outputs[0], add1.inputs[1])
+    cn.links.new(add1.outputs[0], add2.inputs[0])
+    cn.links.new(glasses[2].outputs[0], add2.inputs[1])
+    cn.links.new(add2.outputs[0], out.inputs["Surface"])
+    room = bpy.data.objects.new("room_light", bpy.data.lights.new("room_light", "AREA"))
+    room.data.energy, room.data.size, room.data.color = 3, 0.8, (1, 0.95, 0.9)
+    room.location = (0.1, -0.6, 0.15)
+    room.rotation_euler = (Vector((0, 0, 0)) - room.location).to_track_quat("-Z", "Y").to_euler()
+    col.objects.link(room)
+    # camera like Astra's close photo: the maker fills the frame, sharp from panel to crystals, the city soft
+    cam.data.lens = 66
+    cam.location = (0.0, -0.31, -0.04)
+    cam.rotation_euler = (Vector((0, 0, -0.03)) - Vector(cam.location)).to_track_quat("-Z", "Y").to_euler()
+    cam.data.dof.use_dof = True
+    cam.data.dof.focus_distance = 0.31
+    cam.data.dof.aperture_fstop = 8.0
+    for flag, part in (("zoomgear", "gear_green"), ("zoomcoil", "coil"), ("zoomcrystal", "crystal_right")):
+        if flag in argv:   # test views filling the frame
+            cam.data.lens = 300 if flag == "zoomgear" else 220
+            target = bpy.data.objects[part].matrix_world.translation
+            cam.rotation_euler = (target - Vector(cam.location)).to_track_quat("-Z", "Y").to_euler()
+            cam.data.dof.focus_distance = (target - Vector(cam.location)).length
+            cam.data.dof.aperture_fstop = 16.0
+    scn.view_settings.view_transform = "AgX"
+    scn.view_settings.look = "AgX - Medium High Contrast" if "AgX - Medium High Contrast" in [
+        i.identifier for i in scn.view_settings.bl_rna.properties["look"].enum_items] else "None"
+    scn.view_settings.exposure = -0.7
+    scn.render.use_motion_blur = "still" not in argv     # only the video; stills stay crisp
+    scn.render.motion_blur_shutter = 0.5
 
 if DO_RENDER or "still" in argv:
     eng = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
     scn.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in eng else "BLENDER_EEVEE"
     if hasattr(scn.eevee, "use_raytracing"):
         scn.eevee.use_raytracing = True
-    if "cycles" in argv:   # true glass with dispersion; slower
+    if REAL:   # the graphics card renders the photo-real version
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        try:
+            prefs.compute_device_type = "HIP"
+            prefs.get_devices()
+            for d in prefs.devices:
+                d.use = "RX" in d.name          # the Radeon RX card, not the CPU's built-in graphics
+            scn.cycles.device = "GPU"
+        except Exception as e:
+            print("GPU not available, rendering on the CPU:", e)
+    if "cycles" in argv or REAL:   # true glass with dispersion; slower
         scn.render.engine = "CYCLES"
         scn.cycles.samples = 192
         scn.cycles.use_denoising = True
         scn.cycles.max_bounces = scn.cycles.transmission_bounces = scn.cycles.glossy_bounces = 16
     scn.render.resolution_x, scn.render.resolution_y = 540, 960
+    if REAL:
+        # glitter needs light traced far into the glass and back out, and sparkles left unclamped
+        scn.cycles.samples = 128
+        scn.cycles.time_limit = 90                     # seconds per frame, whatever the glass does
+        scn.cycles.max_bounces = 16
+        scn.cycles.transmission_bounces = 16           # enough for in, two or three inner bounces, and out
+        scn.cycles.glossy_bounces = 8
+        scn.cycles.sample_clamp_indirect = 12          # flashes stay bright, runaway paths don't
+        scn.cycles.sample_clamp_direct = 0
+        scn.cycles.blur_glossy = 0.0
+        scn.cycles.caustics_reflective = scn.cycles.caustics_refractive = True
+        scn.cycles.use_denoising = "nodenoise" not in argv
+        scn.render.resolution_x, scn.render.resolution_y = 1080, 1440   # the photos' 3:4
     scn.render.film_transparent = False
+# Final material/geometry processing is deliberately after the REAL block, before every export.
+# The model subtree is exported separately from the photographic/studio environment.
+import importlib.util
+_spec = importlib.util.spec_from_file_location("stained_glass", os.path.join(os.path.dirname(__file__), "stained-glass-finish-20261030.py"))
+_finish = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_finish)
+_finish.finish(globals())
+
+for a in argv:   # hide:<name prefix>,... leaves parts out of a test render
+    if a.startswith("hide:"):
+        for o in bpy.data.objects:
+            if o.name.startswith(tuple(a[5:].split(","))):
+                o.hide_render = True
+name = "real" if REAL else "preview"
+stamp = "20261030"
 if "still" in argv:
     scn.frame_set(int(argv[argv.index("still") + 1]) if len(argv) > argv.index("still") + 1 else 1)
     scn.render.image_settings.file_format = "PNG"
-    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-check-{STAMP}.png")
+    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-{'real-' if REAL else ''}check-{stamp}.png")
     bpy.ops.render.render(write_still=True)
 if DO_RENDER:
-    scn.frame_start, scn.frame_end = 1, 180
+    scn.frame_start, scn.frame_end = 1, (240 if REAL else 180)
     scn.render.image_settings.file_format = "FFMPEG"
     scn.render.ffmpeg.format = "MPEG4"
     scn.render.ffmpeg.codec = "H264"
-    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-preview-{STAMP}.mp4")
+    scn.render.ffmpeg.constant_rate_factor = "HIGH"
+    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-{name}-{stamp}.mp4")
     bpy.ops.render.render(animation=True)
     scn.render.image_settings.file_format = "PNG"
     scn.frame_set(1)
-    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-still-{STAMP}.png")
+    scn.render.filepath = os.path.join(OUT, f"rainbow-maker-{'real' if REAL else 'still'}-{stamp}.png")
     bpy.ops.render.render(write_still=True)
     print("RENDERED")

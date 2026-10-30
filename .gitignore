@@ -77,3 +77,6 @@ crashlytics-build.properties
 /Review/
 /Packages/com.vrchat.base/
 /Packages/com.vrchat.worlds/
+
+# Blender helper import cache
+__pycache__/
