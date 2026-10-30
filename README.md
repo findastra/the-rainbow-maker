@@ -35,3 +35,7 @@ A model of Astra's own double-crystal Kikkerland solar Rainbow Maker whose gears
 
 1. The Rainbow Maker is a Kikkerland product; the model follows Astra's own unit and her photos of it.
 2. The model, the crystals and the world: built with Claude Opus 5.5, from 2026-10-22.
+
+## License
+
+No general source license is granted yet. Third-party assets keep their own licenses.
